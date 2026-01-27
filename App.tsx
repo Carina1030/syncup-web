@@ -1,19 +1,22 @@
 
-import React, { useState, useEffect } from 'react';
-import { User, EventData, Logistics, Message, AvailabilitySlot, CalendarEvent } from './types';
+import React, { useState } from 'react';
+import { User, EventData, Message, AvailabilitySlot, CalendarEvent, ProposedTimeSlot, Logistics } from './types';
 import { TIME_SLOTS, Icons } from './constants';
 import AvailabilityGrid from './components/AvailabilityGrid';
 import LogisticsHub from './components/LogisticsHub';
 import ChatRoom from './components/ChatRoom';
 import { parseLogisticsFromChat } from './services/geminiService';
-import { fetchUserCalendar } from './services/calendarService';
+import { fetchUserCalendar, checkAppleCalendarAuth, authenticateAppleCalendar, disconnectAppleCalendar } from './services/calendarService';
 
 const App: React.FC = () => {
-  const [showEventForm, setShowEventForm] = useState(false);
   const [showMemberForm, setShowMemberForm] = useState(false);
   const [showCalendarForm, setShowCalendarForm] = useState(false);
   const [isSyncingCalendar, setIsSyncingCalendar] = useState(false);
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
+  const [isAppleCalendarConnected, setIsAppleCalendarConnected] = useState(false);
+  const [appleCalendarEmail, setAppleCalendarEmail] = useState<string | null>(null);
+  const [useRealCalendar, setUseRealCalendar] = useState(false);
+  const [showAppleCalendarForm, setShowAppleCalendarForm] = useState(false);
   
   // Initialize with empty state - user will create event
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -22,9 +25,31 @@ const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'grid' | 'logistics' | 'chat'>('grid');
 
   // Create new event
-  const handleCreateEvent = (eventData: { title: string; description: string; creatorName: string; creatorRole: 'Director' | 'Co-manager' | 'Member' }) => {
+  const handleCreateEvent = (eventData: { 
+    title: string; 
+    description: string; 
+    creatorName: string; 
+    creatorRole: 'Director' | 'Co-manager' | 'Member';
+    startDate: string;
+    endDate: string;
+  }) => {
     const creatorId = Math.random().toString(36).substr(2, 9);
     const creator: User = { id: creatorId, name: eventData.creatorName, role: eventData.creatorRole };
+    
+    // Generate slots for all dates in range
+    const { getDatesInRange } = require('./utils/dateUtils');
+    const dates = getDatesInRange(eventData.startDate, eventData.endDate);
+    const slots: AvailabilitySlot[] = [];
+    
+    dates.forEach((date: string) => {
+      TIME_SLOTS.forEach((time: string) => {
+        slots.push({
+          date,
+          time,
+          availableUsers: []
+        });
+      });
+    });
     
     const newEvent: EventData = {
       id: Math.random().toString(36).substr(2, 9),
@@ -37,13 +62,17 @@ const App: React.FC = () => {
         materials: '',
         notes: ''
       },
-      slots: TIME_SLOTS.map(time => ({ time, availableUsers: [] })),
+      dateRange: {
+        startDate: eventData.startDate,
+        endDate: eventData.endDate
+      },
+      slots,
       messages: [
         {
           id: `sys-${Date.now()}`,
           userId: 'system',
           userName: 'SyncUp',
-          text: `${eventData.creatorName} created the event`,
+          text: `${eventData.creatorName} created the event (${eventData.startDate} to ${eventData.endDate})`,
           timestamp: Date.now(),
           isSystem: true
         }
@@ -54,7 +83,6 @@ const App: React.FC = () => {
     
     setEvent(newEvent);
     setCurrentUser(creator);
-    setShowEventForm(false);
   };
 
   // Add member
@@ -66,21 +94,24 @@ const App: React.FC = () => {
       role: memberData.role
     };
     
-    setEvent(prev => prev ? {
-      ...prev,
-      members: [...prev.members, newMember],
-      messages: [
-        ...prev.messages,
-        {
-          id: `sys-member-${Date.now()}`,
-          userId: 'system',
-          userName: 'SyncUp',
-          text: `${memberData.name} joined the event`,
-          timestamp: Date.now(),
-          isSystem: true
-        }
-      ]
-    } : null);
+    setEvent((prev: EventData | null) => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        members: [...prev.members, newMember],
+        messages: [
+          ...prev.messages,
+          {
+            id: `sys-member-${Date.now()}`,
+            userId: 'system',
+            userName: 'SyncUp',
+            text: `${memberData.name} joined the event`,
+            timestamp: Date.now(),
+            isSystem: true
+          }
+        ]
+      };
+    });
     setShowMemberForm(false);
   };
 
@@ -92,23 +123,80 @@ const App: React.FC = () => {
       startTime: eventData.startTime,
       durationMinutes: eventData.durationMinutes
     };
-    setCalendarEvents(prev => [...prev, newEvent]);
+    setCalendarEvents((prev: CalendarEvent[]) => [...prev, newEvent]);
     setShowCalendarForm(false);
   };
 
   // Remove calendar event
   const handleRemoveCalendarEvent = (eventId: string) => {
-    setCalendarEvents(prev => prev.filter(e => e.id !== eventId));
+    setCalendarEvents((prev: CalendarEvent[]) => prev.filter((e: CalendarEvent) => e.id !== eventId));
+  };
+
+  // Check Apple Calendar connection status on mount
+  React.useEffect(() => {
+    const checkConnection = async () => {
+      const connected = checkAppleCalendarAuth();
+      setIsAppleCalendarConnected(connected);
+      if (connected) {
+        // Get stored email from credentials if available
+        const { getCalDAVCredentials } = await import('./services/appleCalendarAuth');
+        const credentials = getCalDAVCredentials();
+        if (credentials) {
+          setAppleCalendarEmail(credentials.username);
+          setUseRealCalendar(true);
+        }
+      }
+    };
+    checkConnection();
+  }, []);
+
+  // Handle Apple Calendar authentication
+  const handleConnectAppleCalendar = async (username: string, password: string, serverUrl?: string) => {
+    try {
+      const success = await authenticateAppleCalendar(username, password, serverUrl);
+      if (success) {
+        setIsAppleCalendarConnected(true);
+        setAppleCalendarEmail(username);
+        setUseRealCalendar(true);
+        setShowAppleCalendarForm(false);
+      } else {
+        alert('Failed to connect to Apple Calendar. Please check your credentials.');
+      }
+    } catch (error) {
+      console.error('Error connecting to Apple Calendar:', error);
+      alert('Failed to connect to Apple Calendar. Please check your credentials and ensure you\'re using an app-specific password.');
+    }
+  };
+
+  // Handle Apple Calendar disconnect
+  const handleDisconnectAppleCalendar = async () => {
+    try {
+      await disconnectAppleCalendar();
+      setIsAppleCalendarConnected(false);
+      setAppleCalendarEmail(null);
+      setUseRealCalendar(false);
+      setCalendarEvents([]);
+    } catch (error) {
+      console.error('Error disconnecting Apple Calendar:', error);
+    }
   };
 
   // Logic: Sync Calendar
   const handleSyncCalendar = async () => {
     setIsSyncingCalendar(true);
     try {
-      const data = await fetchUserCalendar();
-      setCalendarEvents(prev => [...prev, ...data]);
+      // Use real calendar if connected, otherwise use demo data
+      const data = await fetchUserCalendar(useRealCalendar, !useRealCalendar);
+      
+      // Only add events that don't already exist (by time slot)
+      setCalendarEvents((prev: CalendarEvent[]) => {
+        const existingTimes = new Set(prev.map((e: CalendarEvent) => e.startTime));
+        const newEvents = data.filter((e: CalendarEvent) => !existingTimes.has(e.startTime));
+        return [...prev, ...newEvents];
+      });
     } catch (err) {
       console.error("Failed to sync calendar", err);
+      alert("Failed to sync calendar. Please try again.");
     } finally {
       setIsSyncingCalendar(false);
     }
@@ -126,98 +214,170 @@ const App: React.FC = () => {
       timestamp: Date.now()
     };
 
-    setEvent(prev => prev ? {
-      ...prev,
-      messages: [...prev.messages, newMessage]
-    } : null);
+    setEvent((prev: EventData | null) => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        messages: [...prev.messages, newMessage]
+      };
+    });
 
     // AI Parsing for Directors/Co-managers
     if (currentUser.role === 'Director' || currentUser.role === 'Co-manager') {
       const updates = await parseLogisticsFromChat(text, event.logistics);
       if (updates) {
-        setEvent(prev => prev ? {
-          ...prev,
-          logistics: { ...prev.logistics, ...updates, lastUpdatedBy: currentUser.name },
-          messages: [
-            ...prev.messages,
-            { 
-              id: `sys-${Date.now()}`, 
-              userId: 'system', 
-              userName: 'SyncUp', 
-              text: `AI: Logistics updated by ${currentUser.name}`, 
-              timestamp: Date.now(), 
-              isSystem: true 
-            }
-          ]
-        } : null);
+        setEvent((prev: EventData | null) => {
+          if (!prev) return null;
+          return {
+            ...prev,
+            logistics: { ...prev.logistics, ...updates, lastUpdatedBy: currentUser.name },
+            messages: [
+              ...prev.messages,
+              { 
+                id: `sys-${Date.now()}`, 
+                userId: 'system', 
+                userName: 'SyncUp', 
+                text: `AI: Logistics updated by ${currentUser.name}`, 
+                timestamp: Date.now(), 
+                isSystem: true 
+              }
+            ]
+          };
+        });
       }
     }
   };
 
-  const handleToggleAvailability = (time: string, isAvailable: boolean) => {
+  const handleToggleAvailability = (date: string, time: string, isAvailable: boolean) => {
     if (!event || !currentUser) return;
     
     // Conflict Prevention: If trying to mark as available, check calendar events first
     if (isAvailable) {
-      const conflict = calendarEvents.find(e => e.startTime === time);
+      const conflict = calendarEvents.find((e: CalendarEvent) => e.startTime === time);
       if (conflict) {
         alert(`Conflict detected: "${conflict.title}". You cannot mark yourself as available during your existing calendar events.`);
         return;
       }
     }
 
-    setEvent(prev => prev ? {
-      ...prev,
-      slots: prev.slots.map(slot => {
-        if (slot.time === time) {
-          const newUserList = isAvailable 
-            ? [...slot.availableUsers, currentUser.id]
-            : slot.availableUsers.filter(id => id !== currentUser.id);
-          return { ...slot, availableUsers: newUserList };
-        }
-        return slot;
-      })
-    } : null);
+    setEvent((prev: EventData | null) => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        slots: prev.slots.map((slot: AvailabilitySlot) => {
+          if (slot.date === date && slot.time === time) {
+            const newUserList = isAvailable 
+              ? [...slot.availableUsers, currentUser.id]
+              : slot.availableUsers.filter((id: string) => id !== currentUser.id);
+            return { ...slot, availableUsers: newUserList };
+          }
+          return slot;
+        })
+      };
+    });
   };
 
-  const handleLockEvent = (time: string) => {
+  // Analyze availability and generate proposed time slots
+  const handleAnalyzeAvailability = () => {
+    if (!event) return;
+    
+    const { analyzeAvailability } = require('./utils/availabilityAnalysis');
+    const proposedSlots = analyzeAvailability(event.slots, event.members, event.dateRange);
+    
+    setEvent((prev: EventData | null) => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        proposedTimeSlots: proposedSlots
+      };
+    });
+  };
+
+  // Director selects a time slot for approval
+  const handleSelectTimeSlot = (slot: ProposedTimeSlot) => {
     if (!event || !currentUser) return;
-    setEvent(prev => prev ? {
-      ...prev,
-      isLocked: true,
-      lockedSlot: time,
-      messages: [
-        ...prev.messages,
-        {
-          id: `sys-lock-${Date.now()}`,
-          userId: 'system',
-          userName: 'SyncUp',
-          text: `Event locked for ${time}`,
-          timestamp: Date.now(),
-          isSystem: true
-        }
-      ]
-    } : null);
+    
+    setEvent((prev: EventData | null) => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        approvedTimeSlot: slot
+      };
+    });
+  };
+
+  // Send approved time slot to chat for member approval
+  const handleSendTimeSlotForApproval = () => {
+    if (!event || !currentUser || !event.approvedTimeSlot) return;
+    
+    const { formatDateShort } = require('./utils/dateUtils');
+    const timeSlotText = `${formatDateShort(event.approvedTimeSlot.date)} at ${event.approvedTimeSlot.time}`;
+    
+    const message: Message = {
+      id: Math.random().toString(36).substr(2, 9),
+      userId: currentUser.id,
+      userName: currentUser.name,
+      text: `📅 Proposed Time: ${timeSlotText}\n\nPlease confirm if this time works for you! 👍`,
+      timestamp: Date.now()
+    };
+
+    setEvent((prev: EventData | null) => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        messages: [...prev.messages, message]
+      };
+    });
+
+    // Switch to chat tab
+    setActiveTab('chat');
+  };
+
+  const handleLockEvent = (date: string, time: string) => {
+    if (!event || !currentUser) return;
+    const lockedKey = `${date}|${time}`;
+    setEvent((prev: EventData | null) => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        isLocked: true,
+        lockedSlot: lockedKey,
+        messages: [
+          ...prev.messages,
+          {
+            id: `sys-lock-${Date.now()}`,
+            userId: 'system',
+            userName: 'SyncUp',
+            text: `Event locked for ${date} at ${time}`,
+            timestamp: Date.now(),
+            isSystem: true
+          }
+        ]
+      };
+    });
   };
 
   const handleUnlockEvent = () => {
     if (!event || !currentUser) return;
-    setEvent(prev => prev ? {
-      ...prev,
-      isLocked: false,
-      lockedSlot: undefined,
-      messages: [
-        ...prev.messages,
-        {
-          id: `sys-unlock-${Date.now()}`,
-          userId: 'system',
-          userName: 'SyncUp',
-          text: `Event unlocked by ${currentUser.name}`,
-          timestamp: Date.now(),
-          isSystem: true
-        }
-      ]
-    } : null);
+    setEvent((prev: EventData | null) => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        isLocked: false,
+        lockedSlot: undefined,
+        messages: [
+          ...prev.messages,
+          {
+            id: `sys-unlock-${Date.now()}`,
+            userId: 'system',
+            userName: 'SyncUp',
+            text: `Event unlocked by ${currentUser.name}`,
+            timestamp: Date.now(),
+            isSystem: true
+          }
+        ]
+      };
+    });
   };
 
   const canEdit = currentUser && (currentUser.role === 'Director' || currentUser.role === 'Co-manager');
@@ -257,7 +417,8 @@ const App: React.FC = () => {
              </div>
              <button 
               onClick={() => {
-                const currentIndex = event.members.findIndex(m => m.id === currentUser.id);
+                if (!event || !currentUser) return;
+                const currentIndex = event.members.findIndex((m: User) => m.id === currentUser.id);
                 if (currentIndex === -1) return;
                 const nextIndex = (currentIndex + 1) % event.members.length;
                 setCurrentUser(event.members[nextIndex]);
@@ -313,7 +474,7 @@ const App: React.FC = () => {
           <div className="mb-4 bg-white rounded-xl border border-gray-100 p-3">
             <h4 className="text-xs font-bold text-gray-500 uppercase mb-2">Your Calendar Events</h4>
             <div className="space-y-1">
-              {calendarEvents.map(calEvent => (
+              {calendarEvents.map((calEvent: CalendarEvent) => (
                 <div key={calEvent.id} className="flex items-center justify-between text-xs p-2 bg-gray-50 rounded-lg">
                   <span className="text-gray-700">{calEvent.title} - {calEvent.startTime}</span>
                   <button
@@ -330,54 +491,46 @@ const App: React.FC = () => {
 
         {activeTab === 'grid' && (
           <div className="animate-in fade-in slide-in-from-bottom-4 duration-300">
+            {canEdit && !event.isLocked && event.slots.some((s: AvailabilitySlot) => s.availableUsers.length > 0) && (
+              <div className="mb-4 p-4 bg-white border border-gray-100 rounded-2xl">
+                <div className="flex items-center justify-between mb-3">
+                  <h4 className="font-bold text-gray-900">Director's Tools</h4>
+                  <button
+                    onClick={handleAnalyzeAvailability}
+                    className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-bold hover:bg-indigo-700 transition-colors"
+                  >
+                    Analyze Availability
+                  </button>
+                </div>
+                <p className="text-xs text-gray-500">
+                  Click "Analyze Availability" to find time slots where all members are available.
+                </p>
+              </div>
+            )}
+            
             <AvailabilityGrid 
               slots={event.slots} 
               currentUser={currentUser} 
               members={event.members}
+              dateRange={event.dateRange}
               onToggle={handleToggleAvailability}
               isLocked={event.isLocked}
               lockedSlot={event.lockedSlot}
               calendarEvents={calendarEvents}
               isSyncing={isSyncingCalendar}
               onSyncCalendar={handleSyncCalendar}
+              onClearCalendar={() => setCalendarEvents([])}
+              isAppleCalendarConnected={isAppleCalendarConnected}
+              appleCalendarEmail={appleCalendarEmail}
+              onConnectAppleCalendar={() => setShowAppleCalendarForm(true)}
+              onDisconnectAppleCalendar={handleDisconnectAppleCalendar}
+              proposedTimeSlots={event.proposedTimeSlots}
+              approvedTimeSlot={event.approvedTimeSlot}
+              onAnalyze={handleAnalyzeAvailability}
+              onSelectTimeSlot={handleSelectTimeSlot}
+              onSendForApproval={handleSendTimeSlotForApproval}
+              canEdit={canEdit}
             />
-            {canEdit && !event.isLocked && (
-              <div className="mt-6 p-4 bg-white border border-gray-100 rounded-2xl">
-                <div className="flex items-center justify-between mb-4">
-                   <h4 className="font-bold text-gray-900">Director's Dashboard</h4>
-                   <span className="text-[10px] font-bold text-emerald-500 uppercase">Live Stats</span>
-                </div>
-                <div className="space-y-2">
-                  {event.slots
-                    .filter(s => s.availableUsers.length > 0)
-                    .sort((a, b) => b.availableUsers.length - a.availableUsers.length)
-                    .slice(0, 3)
-                    .map(slot => (
-                      <button 
-                        key={slot.time}
-                        onClick={() => handleLockEvent(slot.time)}
-                        className="w-full text-left p-4 rounded-xl bg-indigo-50 border border-indigo-100 flex justify-between items-center group active:scale-[0.98] transition-all"
-                      >
-                        <div>
-                          <span className="font-bold text-indigo-900 group-hover:text-indigo-600">{slot.time}</span>
-                          <div className="text-[10px] text-indigo-500 font-bold uppercase tracking-wider">
-                            {slot.availableUsers.length} / {event.members.length} Confirmed
-                          </div>
-                        </div>
-                        <div className="p-2 bg-white rounded-full text-indigo-600 shadow-sm group-hover:bg-indigo-600 group-hover:text-white transition-colors">
-                          <Icons.Lock />
-                        </div>
-                      </button>
-                    ))
-                  }
-                  {event.slots.every(s => s.availableUsers.length === 0) && (
-                    <div className="p-8 border-2 border-dashed border-gray-100 rounded-2xl text-center">
-                       <p className="text-xs text-gray-400">Waiting for first votes...</p>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
           </div>
         )}
 
@@ -386,7 +539,10 @@ const App: React.FC = () => {
             <LogisticsHub 
               logistics={event.logistics} 
               isEditor={canEdit}
-              onUpdate={(updates) => setEvent(prev => prev ? ({ ...prev, logistics: { ...prev.logistics, ...updates } }) : null)}
+              onUpdate={(updates: Partial<Logistics>) => setEvent((prev: EventData | null) => {
+                if (!prev) return null;
+                return { ...prev, logistics: { ...prev.logistics, ...updates } };
+              })}
             />
           </div>
         )}
@@ -415,6 +571,14 @@ const App: React.FC = () => {
         <CalendarEventFormModal
           onClose={() => setShowCalendarForm(false)}
           onSubmit={handleAddCalendarEvent}
+        />
+      )}
+
+      {/* Apple Calendar Connection Form Modal */}
+      {showAppleCalendarForm && (
+        <AppleCalendarFormModal
+          onClose={() => setShowAppleCalendarForm(false)}
+          onSubmit={handleConnectAppleCalendar}
         />
       )}
 
@@ -455,17 +619,36 @@ const App: React.FC = () => {
 
 // Event Creation Form Component
 const EventCreationForm: React.FC<{
-  onSubmit: (data: { title: string; description: string; creatorName: string; creatorRole: 'Director' | 'Co-manager' | 'Member' }) => void;
+  onSubmit: (data: { title: string; description: string; creatorName: string; creatorRole: 'Director' | 'Co-manager' | 'Member'; startDate: string; endDate: string }) => void;
 }> = ({ onSubmit }) => {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [creatorName, setCreatorName] = useState('');
   const [creatorRole, setCreatorRole] = useState<'Director' | 'Co-manager' | 'Member'>('Director');
+  
+  // Default to next week
+  const today = new Date();
+  const nextWeek = new Date(today);
+  nextWeek.setDate(today.getDate() + 7);
+  
+  const getFormattedDate = (date: Date): string => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const [startDate, setStartDate] = useState(getFormattedDate(today));
+  const [endDate, setEndDate] = useState(getFormattedDate(nextWeek));
+
+  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!title.trim() || !creatorName.trim()) return;
-    onSubmit({ title, description, creatorName, creatorRole });
+    if (startDate > endDate) {
+      alert('End date must be after start date');
+      return;
+    }
+    onSubmit({ title, description, creatorName, creatorRole, startDate, endDate });
   };
 
   return (
@@ -485,7 +668,7 @@ const EventCreationForm: React.FC<{
         <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Description</label>
         <textarea
           value={description}
-          onChange={(e) => setDescription(e.target.value)}
+              onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setDescription(e.target.value)}
           placeholder="Event description..."
           rows={3}
           className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
@@ -496,7 +679,7 @@ const EventCreationForm: React.FC<{
         <input
           type="text"
           value={creatorName}
-          onChange={(e) => setCreatorName(e.target.value)}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCreatorName(e.target.value)}
           placeholder="Enter your name"
           className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
           required
@@ -506,13 +689,43 @@ const EventCreationForm: React.FC<{
         <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Your Role</label>
         <select
           value={creatorRole}
-          onChange={(e) => setCreatorRole(e.target.value as 'Director' | 'Co-manager' | 'Member')}
+              onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setCreatorRole(e.target.value as 'Director' | 'Co-manager' | 'Member')}
           className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
         >
           <option value="Director">Director</option>
           <option value="Co-manager">Co-manager</option>
           <option value="Member">Member</option>
         </select>
+      </div>
+      <div>
+        <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Availability Date Range</label>
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="text-[10px] text-gray-400 mb-1 block">Start Date</label>
+            <input
+              type="date"
+              value={startDate}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setStartDate(e.target.value)}
+              min={getFormattedDate(today)}
+              className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
+              required
+            />
+          </div>
+          <div>
+            <label className="text-[10px] text-gray-400 mb-1 block">End Date</label>
+            <input
+              type="date"
+              value={endDate}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEndDate(e.target.value)}
+              min={startDate}
+              className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
+              required
+            />
+          </div>
+        </div>
+        <p className="text-[10px] text-gray-400 mt-1">
+          Members will select their availability within this date range
+        </p>
       </div>
       <button
         type="submit"
@@ -532,7 +745,7 @@ const MemberFormModal: React.FC<{
   const [name, setName] = useState('');
   const [role, setRole] = useState<'Director' | 'Co-manager' | 'Member'>('Member');
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!name.trim()) return;
     onSubmit({ name, role });
@@ -548,7 +761,7 @@ const MemberFormModal: React.FC<{
             <input
               type="text"
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)}
               placeholder="Member name"
               className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
               required
@@ -558,7 +771,7 @@ const MemberFormModal: React.FC<{
             <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Role</label>
             <select
               value={role}
-              onChange={(e) => setRole(e.target.value as 'Director' | 'Co-manager' | 'Member')}
+              onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setRole(e.target.value as 'Director' | 'Co-manager' | 'Member')}
               className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
             >
               <option value="Director">Director</option>
@@ -596,7 +809,7 @@ const CalendarEventFormModal: React.FC<{
   const [startTime, setStartTime] = useState('');
   const [durationMinutes, setDurationMinutes] = useState(60);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!title.trim() || !startTime) return;
     onSubmit({ title, startTime, durationMinutes });
@@ -612,7 +825,7 @@ const CalendarEventFormModal: React.FC<{
             <input
               type="text"
               value={title}
-              onChange={(e) => setTitle(e.target.value)}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTitle(e.target.value)}
               placeholder="e.g., Dentist Appointment"
               className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
               required
@@ -637,7 +850,7 @@ const CalendarEventFormModal: React.FC<{
             <input
               type="number"
               value={durationMinutes}
-              onChange={(e) => setDurationMinutes(parseInt(e.target.value) || 60)}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDurationMinutes(parseInt(e.target.value) || 60)}
               min={15}
               step={15}
               className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
@@ -657,6 +870,111 @@ const CalendarEventFormModal: React.FC<{
               className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-colors"
             >
               Add
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+// Apple Calendar Connection Form Modal Component
+const AppleCalendarFormModal: React.FC<{
+  onClose: () => void;
+  onSubmit: (username: string, password: string, serverUrl?: string) => void;
+}> = ({ onClose, onSubmit }) => {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [serverUrl, setServerUrl] = useState('');
+  const [useCustomServer, setUseCustomServer] = useState(false);
+
+  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!username.trim() || !password.trim()) return;
+    const finalServerUrl = useCustomServer && serverUrl.trim() ? serverUrl.trim() : undefined;
+    onSubmit(username, password, finalServerUrl);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl p-6 max-w-md w-full max-h-[90vh] overflow-y-auto">
+        <h3 className="font-bold text-gray-900 mb-2">Connect Apple Calendar</h3>
+        <p className="text-xs text-gray-500 mb-4">
+          Connect to your iCloud Calendar using your Apple ID and an app-specific password.
+        </p>
+        
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4">
+          <p className="text-xs text-blue-800 font-semibold mb-1">Setup Instructions:</p>
+          <ol className="text-xs text-blue-700 list-decimal list-inside space-y-1">
+            <li>Enable Two-Factor Authentication on your Apple ID</li>
+            <li>Go to appleid.apple.com → Security → App-Specific Passwords</li>
+            <li>Generate a password named "SyncUp Calendar"</li>
+            <li>Use your Apple ID email and the generated password below</li>
+          </ol>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Apple ID Email</label>
+            <input
+              type="email"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="your.email@icloud.com"
+              className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
+              required
+            />
+          </div>
+          
+          <div>
+            <label className="block text-xs font-bold text-gray-500 uppercase mb-1">App-Specific Password</label>
+            <input
+              type="password"
+              value={password}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)}
+              placeholder="xxxx-xxxx-xxxx-xxxx"
+              className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
+              required
+            />
+            <p className="text-[10px] text-gray-400 mt-1">
+              Not your regular Apple ID password. Generate one at appleid.apple.com
+            </p>
+          </div>
+
+          <div>
+            <label className="flex items-center space-x-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={useCustomServer}
+                onChange={(e) => setUseCustomServer(e.target.checked)}
+                className="rounded"
+              />
+              <span className="text-xs font-bold text-gray-500 uppercase">Use Custom CalDAV Server</span>
+            </label>
+            {useCustomServer && (
+              <input
+                type="text"
+                value={serverUrl}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setServerUrl(e.target.value)}
+                placeholder="https://caldav.example.com"
+                className="w-full mt-2 px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
+              />
+            )}
+          </div>
+
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 px-4 py-2 border border-gray-200 rounded-xl text-gray-700 hover:bg-gray-50 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-colors"
+            >
+              Connect
             </button>
           </div>
         </form>

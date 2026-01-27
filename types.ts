@@ -30,8 +30,22 @@ export interface Message {
 }
 
 export interface AvailabilitySlot {
-  time: string; // ISO string or simple string like "10:00 AM"
+  date: string; // ISO date string (YYYY-MM-DD)
+  time: string; // e.g., "10:00 AM"
   availableUsers: string[]; // List of user IDs
+}
+
+export interface DateRange {
+  startDate: string; // ISO date string (YYYY-MM-DD)
+  endDate: string; // ISO date string (YYYY-MM-DD)
+}
+
+export interface ProposedTimeSlot {
+  date: string;
+  time: string;
+  availableCount: number;
+  totalMembers: number;
+  isAllAvailable: boolean;
 }
 
 export interface EventData {
@@ -40,9 +54,12 @@ export interface EventData {
   description: string;
   creatorId: string;
   logistics: Logistics;
+  dateRange: DateRange; // Date range for availability selection
   slots: AvailabilitySlot[];
   messages: Message[];
   members: User[];
   isLocked: boolean;
-  lockedSlot?: string;
+  lockedSlot?: string; // Format: "YYYY-MM-DD|HH:MM AM/PM"
+  proposedTimeSlots?: ProposedTimeSlot[]; // Auto-generated common available slots
+  approvedTimeSlot?: ProposedTimeSlot; // Director's selected time slot for approval
 }
