@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { Logistics, User } from '../types';
+import { Logistics } from '../types';
 import { Icons } from '../constants';
 
 interface LogisticsHubProps {
@@ -11,8 +11,10 @@ interface LogisticsHubProps {
 
 const LogisticsHub: React.FC<LogisticsHubProps> = ({ logistics, isEditor, onUpdate }) => {
   const handleMapClick = () => {
-    const query = encodeURIComponent(logistics.venue);
-    window.open(`https://www.google.com/maps/search/?api=1&query=${query}`, '_blank');
+    const query = encodeURIComponent(logistics.venue || '');
+    if (query) {
+      window.open(`https://www.google.com/maps/search/?api=1&query=${query}`, '_blank');
+    }
   };
 
   return (
@@ -25,8 +27,8 @@ const LogisticsHub: React.FC<LogisticsHubProps> = ({ logistics, isEditor, onUpda
             <h3 className="font-semibold text-indigo-900">Logistics Hub</h3>
           </div>
           {isEditor && (
-            <span className="text-[10px] font-bold text-indigo-400 uppercase tracking-tighter">
-              Auto-Updating Enabled
+            <span className="text-[10px] font-bold text-emerald-500 uppercase tracking-tighter">
+              ✓ Editable
             </span>
           )}
         </div>
@@ -35,11 +37,22 @@ const LogisticsHub: React.FC<LogisticsHubProps> = ({ logistics, isEditor, onUpda
           {/* Venue Section */}
           <div className="group relative">
             <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Venue</label>
-            <div className="mt-1 flex items-start justify-between">
-              <p className="text-gray-900 font-medium">{logistics.venue || "TBD"}</p>
+            <div className="mt-1 flex items-start gap-2">
+              {isEditor ? (
+                <input
+                  type="text"
+                  value={logistics.venue}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => onUpdate({ venue: e.target.value })}
+                  placeholder="Enter venue address..."
+                  className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-gray-900 font-medium focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
+                />
+              ) : (
+                <p className="flex-1 text-gray-900 font-medium">{logistics.venue || "TBD"}</p>
+              )}
               <button 
                 onClick={handleMapClick}
-                className="p-1.5 bg-gray-50 text-gray-400 rounded-lg hover:bg-indigo-50 hover:text-indigo-600 transition-colors"
+                disabled={!logistics.venue}
+                className="p-2 bg-gray-50 text-gray-400 rounded-lg hover:bg-indigo-50 hover:text-indigo-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <Icons.Map />
               </button>
@@ -51,7 +64,17 @@ const LogisticsHub: React.FC<LogisticsHubProps> = ({ logistics, isEditor, onUpda
           {/* Wardrobe Section */}
           <div>
             <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Wardrobe</label>
-            <p className="mt-1 text-gray-900 font-medium">{logistics.wardrobe || "Anything comfortable"}</p>
+            {isEditor ? (
+              <input
+                type="text"
+                value={logistics.wardrobe}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => onUpdate({ wardrobe: e.target.value })}
+                placeholder="What should everyone wear?"
+                className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-gray-900 font-medium focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
+              />
+            ) : (
+              <p className="mt-1 text-gray-900 font-medium">{logistics.wardrobe || "Anything comfortable"}</p>
+            )}
           </div>
 
           <div className="h-px bg-gray-100"></div>
@@ -59,7 +82,17 @@ const LogisticsHub: React.FC<LogisticsHubProps> = ({ logistics, isEditor, onUpda
           {/* Materials Section */}
           <div>
             <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Materials</label>
-            <p className="mt-1 text-gray-900 font-medium">{logistics.materials || "None specified"}</p>
+            {isEditor ? (
+              <input
+                type="text"
+                value={logistics.materials}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => onUpdate({ materials: e.target.value })}
+                placeholder="What should everyone bring?"
+                className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-gray-900 font-medium focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
+              />
+            ) : (
+              <p className="mt-1 text-gray-900 font-medium">{logistics.materials || "None specified"}</p>
+            )}
           </div>
 
           <div className="h-px bg-gray-100"></div>
@@ -67,15 +100,34 @@ const LogisticsHub: React.FC<LogisticsHubProps> = ({ logistics, isEditor, onUpda
           {/* Notes Section */}
           <div>
             <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Notes</label>
-            <p className="mt-1 text-gray-700 text-sm whitespace-pre-wrap">{logistics.notes || "No special instructions."}</p>
+            {isEditor ? (
+              <textarea
+                value={logistics.notes}
+                onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => onUpdate({ notes: e.target.value })}
+                placeholder="Any special instructions or notes..."
+                rows={3}
+                className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-gray-700 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none resize-none"
+              />
+            ) : (
+              <p className="mt-1 text-gray-700 text-sm whitespace-pre-wrap">{logistics.notes || "No special instructions."}</p>
+            )}
           </div>
         </div>
+
+        {logistics.lastUpdatedBy && (
+          <div className="px-4 py-2 bg-gray-50 border-t border-gray-100">
+            <p className="text-[10px] text-gray-400">
+              Last updated by <span className="font-medium text-gray-600">{logistics.lastUpdatedBy}</span>
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Quick Action Navigation */}
       <button 
         onClick={handleMapClick}
-        className="w-full bg-indigo-600 text-white py-4 rounded-2xl font-bold flex items-center justify-center space-x-2 shadow-lg shadow-indigo-200 active:scale-[0.98] transition-all"
+        disabled={!logistics.venue}
+        className="w-full bg-indigo-600 text-white py-4 rounded-2xl font-bold flex items-center justify-center space-x-2 shadow-lg shadow-indigo-200 active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
       >
         <Icons.Map />
         <span>Navigate to Venue</span>

@@ -1,5 +1,5 @@
 
-import React, { useState } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import { TIME_SLOTS, Icons } from '../constants';
 import { AvailabilitySlot, User, CalendarEvent, DateRange, ProposedTimeSlot } from '../types';
 import { getDatesInRange, formatDateShort, getDayOfWeek, isToday } from '../utils/dateUtils';
@@ -56,6 +56,13 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
     return dates[0] || dateRange.startDate;
   });
 
+  // Drag selection state
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragMode, setDragMode] = useState<'select' | 'deselect'>('select');
+  const [draggedIndices, setDraggedIndices] = useState<Set<number>>(new Set());
+  const dragStartIndex = useRef<number | null>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
+
   const dates = getDatesInRange(dateRange.startDate, dateRange.endDate);
 
   const getHeatmapColor = (slot: AvailabilitySlot) => {
@@ -86,7 +93,7 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
   };
 
   const handleSlotClick = (date: string, time: string) => {
-    if (isLocked) return;
+    if (isLocked || isDragging) return;
     const slot = slots.find(s => s.date === date && s.time === time);
     const currentlyAvailable = slot?.availableUsers.includes(currentUser.id) || false;
     onToggle(date, time, !currentlyAvailable);
@@ -95,6 +102,90 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
   const getSlotsForDate = (date: string) => {
     return slots.filter(s => s.date === date);
   };
+
+  // Get time slot index
+  const getTimeIndex = (time: string): number => {
+    return TIME_SLOTS.indexOf(time as typeof TIME_SLOTS[number]);
+  };
+
+  // Handle drag start
+  const handleDragStart = useCallback((index: number, time: string) => {
+    if (isLocked) return;
+    
+    const slot = slots.find(s => s.date === selectedDate && s.time === time);
+    const isCurrentlyAvailable = slot?.availableUsers.includes(currentUser.id) || false;
+    
+    setIsDragging(true);
+    setDragMode(isCurrentlyAvailable ? 'deselect' : 'select');
+    dragStartIndex.current = index;
+    setDraggedIndices(new Set([index]));
+  }, [isLocked, slots, selectedDate, currentUser.id]);
+
+  // Handle drag move
+  const handleDragMove = useCallback((index: number) => {
+    if (!isDragging || dragStartIndex.current === null) return;
+    
+    const start = Math.min(dragStartIndex.current, index);
+    const end = Math.max(dragStartIndex.current, index);
+    const newIndices = new Set<number>();
+    
+    for (let i = start; i <= end; i++) {
+      newIndices.add(i);
+    }
+    
+    setDraggedIndices(newIndices);
+  }, [isDragging]);
+
+  // Handle drag end
+  const handleDragEnd = useCallback(() => {
+    if (!isDragging) return;
+    
+    // Apply changes to all dragged slots
+    draggedIndices.forEach(index => {
+      const time = TIME_SLOTS[index];
+      if (time) {
+        const conflict = getConflict(time);
+        // Skip if there's a conflict and trying to select
+        if (dragMode === 'select' && conflict) return;
+        onToggle(selectedDate, time, dragMode === 'select');
+      }
+    });
+    
+    setIsDragging(false);
+    setDraggedIndices(new Set());
+    dragStartIndex.current = null;
+  }, [isDragging, draggedIndices, dragMode, selectedDate, onToggle]);
+
+  // Handle select all for current date
+  const handleSelectAll = () => {
+    if (isLocked) return;
+    TIME_SLOTS.forEach(time => {
+      const slot = slots.find(s => s.date === selectedDate && s.time === time);
+      const isAvailable = slot?.availableUsers.includes(currentUser.id) || false;
+      const conflict = getConflict(time);
+      if (!isAvailable && !conflict) {
+        onToggle(selectedDate, time, true);
+      }
+    });
+  };
+
+  // Handle clear all for current date
+  const handleClearAll = () => {
+    if (isLocked) return;
+    TIME_SLOTS.forEach(time => {
+      const slot = slots.find(s => s.date === selectedDate && s.time === time);
+      const isAvailable = slot?.availableUsers.includes(currentUser.id) || false;
+      if (isAvailable) {
+        onToggle(selectedDate, time, false);
+      }
+    });
+  };
+
+  // Count selected slots for current date
+  const selectedCount = TIME_SLOTS.filter(time => {
+    const slot = slots.find(s => s.date === selectedDate && s.time === time);
+    return slot?.availableUsers.includes(currentUser.id);
+  }).length;
 
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
@@ -209,9 +300,38 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
         </div>
       </div>
 
-      <div className="p-4 max-h-[400px] overflow-y-auto no-scrollbar">
+      {/* Quick Actions */}
+      {!isLocked && (
+        <div className="px-4 py-2 border-b border-gray-100 flex items-center justify-between">
+          <div className="text-[10px] text-gray-500">
+            <span className="font-bold text-gray-700">{selectedCount}</span> / {TIME_SLOTS.length} selected
+          </div>
+          <div className="flex items-center space-x-2">
+            <button
+              onClick={handleSelectAll}
+              className="px-3 py-1 text-[10px] font-bold text-emerald-600 bg-emerald-50 hover:bg-emerald-100 rounded-full transition-colors"
+            >
+              Select All
+            </button>
+            <button
+              onClick={handleClearAll}
+              className="px-3 py-1 text-[10px] font-bold text-gray-500 bg-gray-100 hover:bg-gray-200 rounded-full transition-colors"
+            >
+              Clear All
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div 
+        ref={gridRef}
+        className="p-4 max-h-[400px] overflow-y-auto no-scrollbar select-none"
+        onMouseLeave={handleDragEnd}
+        onMouseUp={handleDragEnd}
+        onTouchEnd={handleDragEnd}
+      >
         <div className="grid grid-cols-1 gap-2">
-          {TIME_SLOTS.map((time) => {
+          {TIME_SLOTS.map((time, index) => {
             const slot = slots.find(s => s.date === selectedDate && s.time === time) || { 
               date: selectedDate, 
               time, 
@@ -222,17 +342,40 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
             const lockedKey = lockedSlot?.split('|');
             const isLockedSlot = lockedKey && slot.date === lockedKey[0] && slot.time === lockedKey[1];
             const conflict = getConflict(time);
+            const isBeingDragged = draggedIndices.has(index);
+            const wouldBeSelected = isBeingDragged && dragMode === 'select';
+            const wouldBeDeselected = isBeingDragged && dragMode === 'deselect';
 
             return (
               <div 
                 key={`${selectedDate}-${time}`}
-                onClick={() => handleSlotClick(selectedDate, time)}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  handleDragStart(index, time);
+                }}
+                onMouseEnter={() => handleDragMove(index)}
+                onTouchStart={(e) => {
+                  handleDragStart(index, time);
+                }}
+                onTouchMove={(e) => {
+                  const touch = e.touches[0];
+                  const element = document.elementFromPoint(touch.clientX, touch.clientY);
+                  const slotElement = element?.closest('[data-slot-index]');
+                  if (slotElement) {
+                    const idx = parseInt(slotElement.getAttribute('data-slot-index') || '0', 10);
+                    handleDragMove(idx);
+                  }
+                }}
+                onClick={() => !isDragging && handleSlotClick(selectedDate, time)}
+                data-slot-index={index}
                 className={`
-                  relative flex items-center p-3 rounded-xl border transition-all duration-200 cursor-pointer
-                  ${isLocked ? 'cursor-default' : 'active:scale-95'}
-                  ${available ? 'border-emerald-500 ring-2 ring-emerald-500/20' : 'border-gray-100'}
+                  relative flex items-center p-3 rounded-xl border transition-all duration-100 cursor-pointer
+                  ${isLocked ? 'cursor-default' : 'active:scale-[0.98]'}
+                  ${available && !wouldBeDeselected ? 'border-emerald-500 ring-2 ring-emerald-500/20' : 'border-gray-100'}
                   ${isLockedSlot ? 'bg-indigo-600 border-indigo-600 text-white' : heatmapClass}
                   ${conflict && !available && !isLockedSlot ? 'bg-rose-50 border-rose-100' : ''}
+                  ${wouldBeSelected && !available ? 'ring-2 ring-emerald-400 border-emerald-400 bg-emerald-50' : ''}
+                  ${wouldBeDeselected && available ? 'ring-2 ring-rose-400 border-rose-400 opacity-60' : ''}
                 `}
               >
                 <div className="flex-1 flex flex-col">
@@ -243,6 +386,13 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
                     {conflict && !isLockedSlot && (
                       <span className="bg-rose-500 text-white text-[9px] px-1.5 py-0.5 rounded-md font-black uppercase">
                         Conflict
+                      </span>
+                    )}
+                    {isBeingDragged && !isLockedSlot && (
+                      <span className={`text-[9px] px-1.5 py-0.5 rounded-md font-black uppercase ${
+                        wouldBeSelected ? 'bg-emerald-500 text-white' : 'bg-rose-500 text-white'
+                      }`}>
+                        {wouldBeSelected ? '+ Add' : '- Remove'}
                       </span>
                     )}
                   </div>
@@ -260,7 +410,7 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
                   )}
                 </div>
                 
-                {available && !isLockedSlot && (
+                {available && !isLockedSlot && !wouldBeDeselected && (
                   <div className="bg-emerald-500 rounded-full p-1 shadow-sm">
                     <svg className="h-3 w-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
@@ -281,7 +431,7 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
 
       {!isLocked && (
         <div className="p-4 bg-gray-50 text-[10px] text-center text-gray-500 italic">
-          Tip: Select a date above, then tap time slots to toggle your availability. Red markers indicate calendar conflicts.
+          Tip: Drag across time slots to select multiple at once. Use "Select All" for a full day.
         </div>
       )}
 
