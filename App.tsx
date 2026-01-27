@@ -7,6 +7,8 @@ import LogisticsHub from './components/LogisticsHub';
 import ChatRoom from './components/ChatRoom';
 import { parseLogisticsFromChat } from './services/geminiService';
 import { fetchUserCalendar, checkAppleCalendarAuth, authenticateAppleCalendar, disconnectAppleCalendar } from './services/calendarService';
+import { getDatesInRange, formatDateShort } from './utils/dateUtils';
+import { analyzeAvailability } from './utils/availabilityAnalysis';
 
 const App: React.FC = () => {
   const [showMemberForm, setShowMemberForm] = useState(false);
@@ -37,7 +39,6 @@ const App: React.FC = () => {
     const creator: User = { id: creatorId, name: eventData.creatorName, role: eventData.creatorRole };
     
     // Generate slots for all dates in range
-    const { getDatesInRange } = require('./utils/dateUtils');
     const dates = getDatesInRange(eventData.startDate, eventData.endDate);
     const slots: AvailabilitySlot[] = [];
     
@@ -281,7 +282,6 @@ const App: React.FC = () => {
   const handleAnalyzeAvailability = () => {
     if (!event) return;
     
-    const { analyzeAvailability } = require('./utils/availabilityAnalysis');
     const proposedSlots = analyzeAvailability(event.slots, event.members, event.dateRange);
     
     setEvent((prev: EventData | null) => {
@@ -310,7 +310,6 @@ const App: React.FC = () => {
   const handleSendTimeSlotForApproval = () => {
     if (!event || !currentUser || !event.approvedTimeSlot) return;
     
-    const { formatDateShort } = require('./utils/dateUtils');
     const timeSlotText = `${formatDateShort(event.approvedTimeSlot.date)} at ${event.approvedTimeSlot.time}`;
     
     const message: Message = {

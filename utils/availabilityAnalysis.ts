@@ -1,6 +1,6 @@
 import { AvailabilitySlot, ProposedTimeSlot, User } from '../types';
 import { TIME_SLOTS } from '../constants';
-import { getDatesInRange } from './dateUtils';
+import { getDatesInRange, formatDateShort } from './dateUtils';
 
 /**
  * Analyze availability and find common available time slots
@@ -72,6 +72,5 @@ export function getTopAvailableSlots(
  * Format time slot for display
  */
 export function formatTimeSlot(slot: ProposedTimeSlot): string {
-  const { formatDateShort } = require('./dateUtils');
   return `${formatDateShort(slot.date)} at ${slot.time}`;
 }
