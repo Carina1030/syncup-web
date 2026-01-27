@@ -1,0 +1,7 @@
+{
+  "name": "Copy of SyncUp",
+  "description": "A zero-friction social coordination tool for high-frequency groups, featuring touch-optimized availability voting, a dynamic logistics hub, and AI-powered chat parsing.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
