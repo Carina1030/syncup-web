@@ -1,4 +1,3 @@
-// @ts-expect-error - React types are provided via CDN, not npm package
 import * as React from 'react';
 
 export const TIME_SLOTS = [

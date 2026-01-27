@@ -379,7 +379,7 @@ const App: React.FC = () => {
     });
   };
 
-  const canEdit = currentUser && (currentUser.role === 'Director' || currentUser.role === 'Co-manager');
+  const canEdit = !!(currentUser && (currentUser.role === 'Director' || currentUser.role === 'Co-manager'));
 
   // Show event creation form if no event exists
   if (!event || !currentUser) {
