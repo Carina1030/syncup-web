@@ -60,6 +60,11 @@ export interface DateRange {
   endDate: string; // ISO date string (YYYY-MM-DD)
 }
 
+export interface TimeRange {
+  startTime: string; // e.g., "05:00 PM"
+  endTime: string; // e.g., "11:00 PM"
+}
+
 export interface ProposedTimeSlot {
   date: string;
   time: string;
@@ -75,6 +80,7 @@ export interface EventData {
   creatorId: string;
   logistics: Logistics;
   dateRange: DateRange; // Date range for availability selection
+  timeRange: TimeRange; // Time range for availability selection (e.g., 5PM-11PM)
   slots: AvailabilitySlot[];
   messages: Message[];
   members: User[];

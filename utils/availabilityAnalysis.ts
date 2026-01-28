@@ -1,41 +1,29 @@
 import { AvailabilitySlot, ProposedTimeSlot, User } from '../types';
-import { TIME_SLOTS } from '../constants';
-import { getDatesInRange, formatDateShort } from './dateUtils';
+import { formatDateShort } from './dateUtils';
 
 /**
  * Analyze availability and find common available time slots
+ * Uses the time slots from the event's slots array (respects timeRange)
  */
 export function analyzeAvailability(
   slots: AvailabilitySlot[],
   members: User[],
   dateRange: { startDate: string; endDate: string }
 ): ProposedTimeSlot[] {
-  const dates = getDatesInRange(dateRange.startDate, dateRange.endDate);
   const totalMembers = members.length;
   const proposedSlots: ProposedTimeSlot[] = [];
 
-  // Group slots by date and time
-  const slotMap = new Map<string, AvailabilitySlot>();
+  // Use the slots directly - they already contain the filtered time slots
   slots.forEach(slot => {
-    const key = `${slot.date}|${slot.time}`;
-    slotMap.set(key, slot);
-  });
+    const availableCount = slot.availableUsers.length;
+    const isAllAvailable = availableCount === totalMembers && totalMembers > 0;
 
-  // Check each date and time combination
-  dates.forEach(date => {
-    TIME_SLOTS.forEach(time => {
-      const key = `${date}|${time}`;
-      const slot = slotMap.get(key);
-      const availableCount = slot?.availableUsers.length || 0;
-      const isAllAvailable = availableCount === totalMembers && totalMembers > 0;
-
-      proposedSlots.push({
-        date,
-        time,
-        availableCount,
-        totalMembers,
-        isAllAvailable,
-      });
+    proposedSlots.push({
+      date: slot.date,
+      time: slot.time,
+      availableCount,
+      totalMembers,
+      isAllAvailable,
     });
   });
 

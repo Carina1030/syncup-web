@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { User, EventData, Message, AvailabilitySlot, CalendarEvent, ProposedTimeSlot, Logistics, MEMBER_BADGES } from './types';
-import { TIME_SLOTS, Icons } from './constants';
+import { TIME_SLOTS, ALL_TIME_SLOTS, Icons } from './constants';
 import AvailabilityGrid from './components/AvailabilityGrid';
 import LogisticsHub from './components/LogisticsHub';
 import ChatRoom from './components/ChatRoom';
@@ -61,16 +61,23 @@ const App: React.FC = () => {
     creatorRole: 'Director' | 'Co-manager' | 'Member';
     startDate: string;
     endDate: string;
+    startTime: string;
+    endTime: string;
   }) => {
     const creatorId = currentUser?.id || Math.random().toString(36).substr(2, 9);
     const creator: User = currentUser || { id: creatorId, name: eventData.creatorName, role: eventData.creatorRole };
+    
+    // Get time slots within the selected range
+    const startIdx = ALL_TIME_SLOTS.indexOf(eventData.startTime as typeof ALL_TIME_SLOTS[number]);
+    const endIdx = ALL_TIME_SLOTS.indexOf(eventData.endTime as typeof ALL_TIME_SLOTS[number]);
+    const selectedTimeSlots = ALL_TIME_SLOTS.slice(startIdx, endIdx + 1);
     
     // Generate slots for all dates in range
     const dates = getDatesInRange(eventData.startDate, eventData.endDate);
     const slots: AvailabilitySlot[] = [];
     
     dates.forEach((date: string) => {
-      TIME_SLOTS.forEach((time: string) => {
+      selectedTimeSlots.forEach((time: string) => {
         slots.push({
           date,
           time,
@@ -95,13 +102,17 @@ const App: React.FC = () => {
         startDate: eventData.startDate,
         endDate: eventData.endDate
       },
+      timeRange: {
+        startTime: eventData.startTime,
+        endTime: eventData.endTime
+      },
       slots,
       messages: [
         {
           id: `sys-${Date.now()}`,
           userId: 'system',
           userName: 'SyncUp',
-          text: `${creator.name} created the event (${eventData.startDate} to ${eventData.endDate})`,
+          text: `${creator.name} created the event (${eventData.startDate} to ${eventData.endDate}, ${eventData.startTime} - ${eventData.endTime})`,
           timestamp: Date.now(),
           isSystem: true
         }
@@ -791,6 +802,7 @@ const App: React.FC = () => {
               currentUser={currentUser} 
               members={event.members}
               dateRange={event.dateRange}
+              timeRange={event.timeRange}
               onToggle={handleToggleAvailability}
               isLocked={event.isLocked}
               lockedSlot={event.lockedSlot}
@@ -999,7 +1011,7 @@ const App: React.FC = () => {
 
 // Event Creation Form Component
 const EventCreationForm: React.FC<{
-  onSubmit: (data: { title: string; description: string; creatorName: string; creatorRole: 'Director' | 'Co-manager' | 'Member'; startDate: string; endDate: string }) => void;
+  onSubmit: (data: { title: string; description: string; creatorName: string; creatorRole: 'Director' | 'Co-manager' | 'Member'; startDate: string; endDate: string; startTime: string; endTime: string }) => void;
 }> = ({ onSubmit }) => {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -1020,6 +1032,10 @@ const EventCreationForm: React.FC<{
 
   const [startDate, setStartDate] = useState(getFormattedDate(today));
   const [endDate, setEndDate] = useState(getFormattedDate(nextWeek));
+  
+  // Time range (default 9 AM to 9 PM)
+  const [startTime, setStartTime] = useState('09:00 AM');
+  const [endTime, setEndTime] = useState('09:00 PM');
 
   const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -1028,7 +1044,14 @@ const EventCreationForm: React.FC<{
       alert('End date must be after start date');
       return;
     }
-    onSubmit({ title, description, creatorName, creatorRole, startDate, endDate });
+    // Validate time range
+    const startIdx = ALL_TIME_SLOTS.indexOf(startTime as typeof ALL_TIME_SLOTS[number]);
+    const endIdx = ALL_TIME_SLOTS.indexOf(endTime as typeof ALL_TIME_SLOTS[number]);
+    if (startIdx >= endIdx) {
+      alert('End time must be after start time');
+      return;
+    }
+    onSubmit({ title, description, creatorName, creatorRole, startDate, endDate, startTime, endTime });
   };
 
   return (
@@ -1048,7 +1071,7 @@ const EventCreationForm: React.FC<{
         <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Description</label>
         <textarea
           value={description}
-              onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setDescription(e.target.value)}
+          onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setDescription(e.target.value)}
           placeholder="Event description..."
           rows={3}
           className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
@@ -1059,7 +1082,7 @@ const EventCreationForm: React.FC<{
         <input
           type="text"
           value={creatorName}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCreatorName(e.target.value)}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCreatorName(e.target.value)}
           placeholder="Enter your name"
           className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
           required
@@ -1069,7 +1092,7 @@ const EventCreationForm: React.FC<{
         <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Your Role</label>
         <select
           value={creatorRole}
-              onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setCreatorRole(e.target.value as 'Director' | 'Co-manager' | 'Member')}
+          onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setCreatorRole(e.target.value as 'Director' | 'Co-manager' | 'Member')}
           className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
         >
           <option value="Director">Director</option>
@@ -1103,8 +1126,37 @@ const EventCreationForm: React.FC<{
             />
           </div>
         </div>
+      </div>
+      <div>
+        <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Availability Time Range</label>
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="text-[10px] text-gray-400 mb-1 block">Start Time</label>
+            <select
+              value={startTime}
+              onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setStartTime(e.target.value)}
+              className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
+            >
+              {ALL_TIME_SLOTS.map(time => (
+                <option key={time} value={time}>{time}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="text-[10px] text-gray-400 mb-1 block">End Time</label>
+            <select
+              value={endTime}
+              onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setEndTime(e.target.value)}
+              className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
+            >
+              {ALL_TIME_SLOTS.map(time => (
+                <option key={time} value={time}>{time}</option>
+              ))}
+            </select>
+          </div>
+        </div>
         <p className="text-[10px] text-gray-400 mt-1">
-          Members will select their availability within this date range
+          Members will only see time slots within this range
         </p>
       </div>
       <button

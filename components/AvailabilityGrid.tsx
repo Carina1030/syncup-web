@@ -1,7 +1,6 @@
-
-import React, { useState, useRef, useCallback } from 'react';
-import { TIME_SLOTS, Icons } from '../constants';
-import { AvailabilitySlot, User, CalendarEvent, DateRange, ProposedTimeSlot } from '../types';
+import React, { useState, useRef, useCallback, useMemo } from 'react';
+import { ALL_TIME_SLOTS, Icons } from '../constants';
+import { AvailabilitySlot, User, CalendarEvent, DateRange, ProposedTimeSlot, TimeRange } from '../types';
 import { getDatesInRange, formatDateShort, getDayOfWeek, isToday } from '../utils/dateUtils';
 
 interface AvailabilityGridProps {
@@ -9,6 +8,7 @@ interface AvailabilityGridProps {
   currentUser: User;
   members: User[];
   dateRange: DateRange;
+  timeRange?: TimeRange; // Optional time range filter
   onToggle: (date: string, time: string, isAvailable: boolean) => void;
   isLocked: boolean;
   lockedSlot?: string;
@@ -33,6 +33,7 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
   currentUser, 
   members, 
   dateRange,
+  timeRange,
   onToggle,
   isLocked,
   lockedSlot,
@@ -64,6 +65,15 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
   const gridRef = useRef<HTMLDivElement>(null);
 
   const dates = getDatesInRange(dateRange.startDate, dateRange.endDate);
+
+  // Filter time slots based on timeRange
+  const TIME_SLOTS = useMemo(() => {
+    if (!timeRange) return ALL_TIME_SLOTS;
+    const startIdx = ALL_TIME_SLOTS.indexOf(timeRange.startTime as typeof ALL_TIME_SLOTS[number]);
+    const endIdx = ALL_TIME_SLOTS.indexOf(timeRange.endTime as typeof ALL_TIME_SLOTS[number]);
+    if (startIdx === -1 || endIdx === -1) return ALL_TIME_SLOTS;
+    return ALL_TIME_SLOTS.slice(startIdx, endIdx + 1);
+  }, [timeRange]);
 
   const getHeatmapColor = (slot: AvailabilitySlot) => {
     if (isLocked) {
