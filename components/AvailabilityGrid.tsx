@@ -108,6 +108,9 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
     return TIME_SLOTS.indexOf(time as typeof TIME_SLOTS[number]);
   };
 
+  // Track if we actually dragged (moved to different slot)
+  const hasDragged = useRef(false);
+
   // Handle drag start
   const handleDragStart = useCallback((index: number, time: string) => {
     if (isLocked) return;
@@ -118,12 +121,18 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
     setIsDragging(true);
     setDragMode(isCurrentlyAvailable ? 'deselect' : 'select');
     dragStartIndex.current = index;
+    hasDragged.current = false;
     setDraggedIndices(new Set([index]));
   }, [isLocked, slots, selectedDate, currentUser.id]);
 
   // Handle drag move
   const handleDragMove = useCallback((index: number) => {
     if (!isDragging || dragStartIndex.current === null) return;
+    
+    // Mark that we actually dragged to a different slot
+    if (index !== dragStartIndex.current) {
+      hasDragged.current = true;
+    }
     
     const start = Math.min(dragStartIndex.current, index);
     const end = Math.max(dragStartIndex.current, index);
@@ -140,21 +149,38 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
   const handleDragEnd = useCallback(() => {
     if (!isDragging) return;
     
-    // Apply changes to all dragged slots
-    draggedIndices.forEach(index => {
+    // If we didn't actually drag (just clicked), handle as single click
+    if (!hasDragged.current && draggedIndices.size === 1) {
+      const index = Array.from(draggedIndices)[0];
       const time = TIME_SLOTS[index];
       if (time) {
+        const slot = slots.find(s => s.date === selectedDate && s.time === time);
+        const isCurrentlyAvailable = slot?.availableUsers.includes(currentUser.id) || false;
         const conflict = getConflict(time);
-        // Skip if there's a conflict and trying to select
-        if (dragMode === 'select' && conflict) return;
-        onToggle(selectedDate, time, dragMode === 'select');
+        
+        // For single click, toggle the slot (skip if conflict and trying to select)
+        if (!(conflict && !isCurrentlyAvailable)) {
+          onToggle(selectedDate, time, !isCurrentlyAvailable);
+        }
       }
-    });
+    } else {
+      // Apply changes to all dragged slots (multi-select)
+      draggedIndices.forEach(index => {
+        const time = TIME_SLOTS[index];
+        if (time) {
+          const conflict = getConflict(time);
+          // Skip if there's a conflict and trying to select
+          if (dragMode === 'select' && conflict) return;
+          onToggle(selectedDate, time, dragMode === 'select');
+        }
+      });
+    }
     
     setIsDragging(false);
     setDraggedIndices(new Set());
     dragStartIndex.current = null;
-  }, [isDragging, draggedIndices, dragMode, selectedDate, onToggle]);
+    hasDragged.current = false;
+  }, [isDragging, draggedIndices, dragMode, selectedDate, onToggle, slots, currentUser.id]);
 
   // Handle select all for current date
   const handleSelectAll = () => {
@@ -366,7 +392,6 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
                     handleDragMove(idx);
                   }
                 }}
-                onClick={() => !isDragging && handleSlotClick(selectedDate, time)}
                 data-slot-index={index}
                 className={`
                   relative flex items-center p-3 rounded-xl border transition-all duration-100 cursor-pointer

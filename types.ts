@@ -3,7 +3,27 @@ export interface User {
   id: string;
   name: string;
   role: 'Director' | 'Co-manager' | 'Member';
+  badge?: string; // e.g., "💃 Dancer", "📷 Photographer", "🎤 Singer"
 }
+
+// Preset badges for quick selection
+export const MEMBER_BADGES = [
+  { emoji: '💃', label: 'Dancer' },
+  { emoji: '📷', label: 'Photographer' },
+  { emoji: '🎤', label: 'Singer' },
+  { emoji: '🎸', label: 'Musician' },
+  { emoji: '🎬', label: 'Director' },
+  { emoji: '🎨', label: 'Designer' },
+  { emoji: '✍️', label: 'Writer' },
+  { emoji: '🎭', label: 'Actor' },
+  { emoji: '🎹', label: 'Pianist' },
+  { emoji: '🥁', label: 'Drummer' },
+  { emoji: '🎻', label: 'Violinist' },
+  { emoji: '📝', label: 'Coordinator' },
+  { emoji: '🎥', label: 'Videographer' },
+  { emoji: '💄', label: 'Makeup' },
+  { emoji: '👗', label: 'Stylist' },
+] as const;
 
 export interface CalendarEvent {
   id: string;
