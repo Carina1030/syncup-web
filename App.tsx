@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { User, EventData, Message, AvailabilitySlot, CalendarEvent, ProposedTimeSlot, Logistics, MEMBER_BADGES } from './types';
 import { TIME_SLOTS, ALL_TIME_SLOTS, Icons } from './constants';
@@ -9,6 +8,31 @@ import { parseLogisticsFromChat } from './services/geminiService';
 import { fetchUserCalendar, checkAppleCalendarAuth, authenticateAppleCalendar, disconnectAppleCalendar } from './services/calendarService';
 import { getDatesInRange, formatDateShort } from './utils/dateUtils';
 import { analyzeAvailability } from './utils/availabilityAnalysis';
+
+// Storage keys
+const STORAGE_KEYS = {
+  USER: 'syncup_user',
+  EVENTS: 'syncup_events',
+};
+
+// Load from localStorage
+const loadFromStorage = <T,>(key: string, defaultValue: T): T => {
+  try {
+    const stored = localStorage.getItem(key);
+    return stored ? JSON.parse(stored) : defaultValue;
+  } catch {
+    return defaultValue;
+  }
+};
+
+// Save to localStorage
+const saveToStorage = <T,>(key: string, value: T): void => {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (e) {
+    console.error('Failed to save to localStorage:', e);
+  }
+};
 
 const App: React.FC = () => {
   const [showMemberForm, setShowMemberForm] = useState(false);
@@ -25,23 +49,105 @@ const App: React.FC = () => {
   const [editingMember, setEditingMember] = useState<User | null>(null);
   const [showJoinForm, setShowJoinForm] = useState(false);
   const [inviteEventId, setInviteEventId] = useState<string | null>(null);
+  const [showLoginForm, setShowLoginForm] = useState(false);
   
-  // Multi-event support
-  const [events, setEvents] = useState<EventData[]>([]);
+  // Multi-event support - load from localStorage
+  const [events, setEvents] = useState<EventData[]>(() => loadFromStorage(STORAGE_KEYS.EVENTS, []));
   const [currentEventId, setCurrentEventId] = useState<string | null>(null);
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [currentUser, setCurrentUser] = useState<User | null>(() => loadFromStorage(STORAGE_KEYS.USER, null));
+  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => loadFromStorage(STORAGE_KEYS.USER, null) !== null);
 
   const [activeTab, setActiveTab] = useState<'grid' | 'logistics' | 'chat'>('grid');
+
+  // Save events to localStorage when they change
+  useEffect(() => {
+    saveToStorage(STORAGE_KEYS.EVENTS, events);
+  }, [events]);
+
+  // Save user to localStorage when it changes
+  useEffect(() => {
+    if (currentUser) {
+      saveToStorage(STORAGE_KEYS.USER, currentUser);
+    }
+  }, [currentUser]);
+
+  // Handle login
+  const handleLogin = (name: string) => {
+    const user: User = {
+      id: Math.random().toString(36).substr(2, 9),
+      name,
+      role: 'Member'
+    };
+    setCurrentUser(user);
+    setIsLoggedIn(true);
+    saveToStorage(STORAGE_KEYS.USER, user);
+    setShowLoginForm(false);
+  };
+
+  // Handle logout
+  const handleLogout = () => {
+    setCurrentUser(null);
+    setIsLoggedIn(false);
+    setCurrentEventId(null);
+    localStorage.removeItem(STORAGE_KEYS.USER);
+  };
 
   // Check for invite link on load
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const eventId = params.get('join');
-    if (eventId) {
+    const encodedData = params.get('data');
+    
+    if (eventId && !showJoinForm) {
       setInviteEventId(eventId);
       setShowJoinForm(true);
+      
+      // Check if event exists locally (use callback form to get latest state)
+      setEvents(prevEvents => {
+        const existingEvent = prevEvents.find(e => e.id === eventId);
+        
+        if (!existingEvent && encodedData) {
+          // Event doesn't exist locally, create it from URL data
+          try {
+            const eventData = JSON.parse(decodeURIComponent(atob(encodedData)));
+            
+            // Generate slots for the event
+            const startIdx = ALL_TIME_SLOTS.indexOf(eventData.timeRange.startTime as typeof ALL_TIME_SLOTS[number]);
+            const endIdx = ALL_TIME_SLOTS.indexOf(eventData.timeRange.endTime as typeof ALL_TIME_SLOTS[number]);
+            const selectedTimeSlots = ALL_TIME_SLOTS.slice(startIdx, endIdx + 1);
+            const dates = getDatesInRange(eventData.dateRange.startDate, eventData.dateRange.endDate);
+            const slots: AvailabilitySlot[] = [];
+            
+            dates.forEach((date: string) => {
+              selectedTimeSlots.forEach((time: string) => {
+                slots.push({ date, time, availableUsers: [] });
+              });
+            });
+            
+            const newEvent: EventData = {
+              id: eventData.id,
+              title: eventData.title,
+              description: eventData.description || '',
+              creatorId: eventData.creatorId,
+              logistics: { venue: '', wardrobe: '', materials: '', notes: '' },
+              dateRange: eventData.dateRange,
+              timeRange: eventData.timeRange,
+              slots,
+              messages: [],
+              members: [], // Will be populated when user joins
+              isLocked: false
+            };
+            
+            return [...prevEvents, newEvent];
+          } catch (e) {
+            console.error('Failed to parse invite link data:', e);
+            return prevEvents;
+          }
+        }
+        return prevEvents;
+      });
     }
-  }, []);
+  }, [showJoinForm]);
 
   // Get current event
   const event = events.find(e => e.id === currentEventId) || null;
@@ -57,15 +163,15 @@ const App: React.FC = () => {
   const handleCreateEvent = (eventData: { 
     title: string; 
     description: string; 
-    creatorName: string; 
-    creatorRole: 'Director' | 'Co-manager' | 'Member';
     startDate: string;
     endDate: string;
     startTime: string;
     endTime: string;
   }) => {
-    const creatorId = currentUser?.id || Math.random().toString(36).substr(2, 9);
-    const creator: User = currentUser || { id: creatorId, name: eventData.creatorName, role: eventData.creatorRole };
+    if (!currentUser) return;
+    
+    // Creator is always Director for the event they create
+    const creator: User = { ...currentUser, role: 'Director' };
     
     // Get time slots within the selected range
     const startIdx = ALL_TIME_SLOTS.indexOf(eventData.startTime as typeof ALL_TIME_SLOTS[number]);
@@ -91,7 +197,7 @@ const App: React.FC = () => {
       id: newEventId,
       title: eventData.title,
       description: eventData.description,
-      creatorId: creatorId,
+      creatorId: creator.id,
       logistics: {
         venue: '',
         wardrobe: '',
@@ -123,10 +229,8 @@ const App: React.FC = () => {
     
     setEvents(prev => [...prev, newEvent]);
     setCurrentEventId(newEventId);
-    if (!currentUser) {
-      setCurrentUser(creator);
-    }
     setShowEventCreator(false);
+    setShowEventList(false);
   };
 
   // Delete event
@@ -225,11 +329,25 @@ const App: React.FC = () => {
       alert("Event not found. The link may be invalid or the event was deleted.");
       setShowJoinForm(false);
       setInviteEventId(null);
-      // Clear URL parameter
       window.history.replaceState({}, '', window.location.pathname);
       return;
     }
     
+    // Check if user with same name already exists in this event
+    const existingMember = targetEvent.members.find(m => m.name === memberData.name);
+    if (existingMember) {
+      // User already in this event, just switch to it
+      setCurrentUser(existingMember);
+      setIsLoggedIn(true);
+      saveToStorage(STORAGE_KEYS.USER, existingMember);
+      setCurrentEventId(inviteEventId);
+      setShowJoinForm(false);
+      setInviteEventId(null);
+      window.history.replaceState({}, '', window.location.pathname);
+      return;
+    }
+    
+    // Create new member
     const newMember: User = {
       id: Math.random().toString(36).substr(2, 9),
       name: memberData.name,
@@ -257,18 +375,29 @@ const App: React.FC = () => {
     }));
     
     setCurrentUser(newMember);
+    setIsLoggedIn(true);
+    saveToStorage(STORAGE_KEYS.USER, newMember);
     setCurrentEventId(inviteEventId);
     setShowJoinForm(false);
     setInviteEventId(null);
-    // Clear URL parameter
     window.history.replaceState({}, '', window.location.pathname);
   };
 
-  // Generate invite link
+  // Generate invite link with event data encoded
   const getInviteLink = () => {
     if (!event) return '';
     const baseUrl = window.location.origin + window.location.pathname;
-    return `${baseUrl}?join=${event.id}`;
+    // Encode essential event data in the URL so others can join even without localStorage
+    const eventData = {
+      id: event.id,
+      title: event.title,
+      description: event.description,
+      dateRange: event.dateRange,
+      timeRange: event.timeRange,
+      creatorId: event.creatorId
+    };
+    const encodedData = btoa(encodeURIComponent(JSON.stringify(eventData)));
+    return `${baseUrl}?join=${event.id}&data=${encodedData}`;
   };
 
   // Copy invite link to clipboard
@@ -570,74 +699,189 @@ const App: React.FC = () => {
     );
   }
 
-  // Show event creation form if no events exist
-  if (events.length === 0 || !currentUser) {
+  // Show landing page / login if not logged in
+  if (!isLoggedIn || !currentUser) {
     return (
-      <div className="min-h-screen bg-gray-50 flex flex-col max-w-md mx-auto relative shadow-2xl overflow-hidden">
-        <header className="bg-white border-b border-gray-100 p-6">
-          <h1 className="text-2xl font-black text-indigo-600 tracking-tighter">SyncUp</h1>
-          <p className="text-gray-600 text-sm mt-2">Create your first event</p>
-        </header>
-        
-        <main className="flex-1 p-4">
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-            <h2 className="font-bold text-gray-900 mb-4">Create New Event</h2>
-            <EventCreationForm onSubmit={handleCreateEvent} />
+      <div className="min-h-screen bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-500 flex flex-col max-w-md mx-auto relative shadow-2xl overflow-hidden">
+        {/* Landing Page */}
+        <div className="flex-1 flex flex-col items-center justify-center p-8 text-white">
+          <div className="text-center mb-12">
+            <h1 className="text-5xl font-black tracking-tighter mb-4">SyncUp</h1>
+            <p className="text-white/80 text-lg">Coordinate schedules effortlessly with your team</p>
           </div>
-        </main>
+          
+          <div className="w-full space-y-4">
+            {showLoginForm ? (
+              <div className="bg-white rounded-2xl p-6 shadow-xl">
+                <h2 className="font-bold text-gray-900 mb-4 text-center">Welcome!</h2>
+                <LoginForm onLogin={handleLogin} />
+                <button
+                  onClick={() => setShowLoginForm(false)}
+                  className="w-full mt-4 text-gray-500 text-sm hover:text-gray-700"
+                >
+                  Back
+                </button>
+              </div>
+            ) : (
+              <>
+                <button
+                  onClick={() => setShowLoginForm(true)}
+                  className="w-full bg-white text-indigo-600 py-4 rounded-2xl font-bold text-lg hover:bg-gray-100 transition-colors shadow-lg"
+                >
+                  Get Started
+                </button>
+                <div className="text-center text-white/60 text-sm mt-6">
+                  <p>Create events, share availability, and find the perfect time to meet.</p>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+        
+        {/* Feature highlights */}
+        <div className="bg-white/10 backdrop-blur-sm p-6 border-t border-white/20">
+          <div className="grid grid-cols-3 gap-4 text-center text-white text-xs">
+            <div>
+              <div className="text-2xl mb-1">📅</div>
+              <div className="font-bold">Schedule</div>
+            </div>
+            <div>
+              <div className="text-2xl mb-1">👥</div>
+              <div className="font-bold">Collaborate</div>
+            </div>
+            <div>
+              <div className="text-2xl mb-1">✨</div>
+              <div className="font-bold">Sync</div>
+            </div>
+          </div>
+        </div>
       </div>
     );
   }
 
-  // Show event selection if no event is selected
-  if (!event) {
+  // Show My Events page (logged in but viewing events list)
+  if (!currentEventId || showEventList) {
+    // Get events where current user is a member
+    const myEvents = events.filter(e => e.members.some(m => m.id === currentUser.id));
+    
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col max-w-md mx-auto relative shadow-2xl overflow-hidden">
         <header className="bg-white border-b border-gray-100 p-6">
-          <h1 className="text-2xl font-black text-indigo-600 tracking-tighter">SyncUp</h1>
-          <p className="text-gray-600 text-sm mt-2">Select an event</p>
+          <div className="flex justify-between items-center">
+            <div>
+              <h1 className="text-2xl font-black text-indigo-600 tracking-tighter">SyncUp</h1>
+              <p className="text-gray-600 text-sm mt-1">Welcome, {currentUser.name}</p>
+            </div>
+            <button
+              onClick={handleLogout}
+              className="text-xs text-gray-400 hover:text-gray-600 px-3 py-1 rounded-full border border-gray-200 hover:border-gray-300"
+            >
+              Logout
+            </button>
+          </div>
         </header>
         
-        <main className="flex-1 p-4">
-          <div className="space-y-3">
-            {events.map(e => (
-              <button
-                key={e.id}
-                onClick={() => handleSwitchEvent(e.id)}
-                className="w-full p-4 bg-white rounded-2xl shadow-sm border border-gray-100 text-left hover:border-indigo-300 transition-colors"
-              >
-                <div className="font-bold text-gray-900">{e.title}</div>
-                <div className="text-xs text-gray-500 mt-1">
-                  {formatDateShort(e.dateRange.startDate)} - {formatDateShort(e.dateRange.endDate)}
-                </div>
-                <div className="text-xs text-gray-400 mt-1">
-                  {e.members.length} members
-                </div>
-              </button>
-            ))}
+        <main className="flex-1 p-4 overflow-y-auto">
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="font-bold text-gray-900">My Events</h2>
+            <button
+              onClick={() => setShowEventCreator(true)}
+              className="bg-indigo-600 text-white px-4 py-2 rounded-xl text-sm font-bold hover:bg-indigo-700 transition-colors"
+            >
+              + Create Event
+            </button>
           </div>
-          <button
-            onClick={() => setShowEventCreator(true)}
-            className="w-full mt-4 bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition-colors"
-          >
-            + Create New Event
-          </button>
+          
+          {myEvents.length === 0 ? (
+            <div className="text-center py-12">
+              <div className="text-6xl mb-4">📅</div>
+              <h3 className="font-bold text-gray-900 mb-2">No events yet</h3>
+              <p className="text-gray-500 text-sm mb-6">Create your first event or join one via invite link</p>
+              <button
+                onClick={() => setShowEventCreator(true)}
+                className="bg-indigo-600 text-white px-6 py-3 rounded-xl font-bold hover:bg-indigo-700 transition-colors"
+              >
+                Create Event
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {myEvents.map(e => {
+                const myMembership = e.members.find(m => m.id === currentUser.id);
+                return (
+                  <button
+                    key={e.id}
+                    onClick={() => {
+                      setCurrentEventId(e.id);
+                      setShowEventList(false);
+                    }}
+                    className="w-full p-4 bg-white rounded-2xl shadow-sm border border-gray-100 text-left hover:border-indigo-300 transition-colors"
+                  >
+                    <div className="flex justify-between items-start">
+                      <div className="flex-1">
+                        <div className="font-bold text-gray-900">{e.title}</div>
+                        <div className="text-xs text-gray-500 mt-1">
+                          {formatDateShort(e.dateRange.startDate)} - {formatDateShort(e.dateRange.endDate)}
+                        </div>
+                        <div className="text-xs text-gray-400 mt-1">
+                          {e.members.length} members
+                        </div>
+                      </div>
+                      <div className="flex flex-col items-end">
+                        {myMembership?.role === 'Director' && (
+                          <span className="bg-indigo-100 text-indigo-700 text-[10px] px-2 py-0.5 rounded-full font-bold uppercase">
+                            Director
+                          </span>
+                        )}
+                        {myMembership?.role === 'Co-manager' && (
+                          <span className="bg-purple-100 text-purple-700 text-[10px] px-2 py-0.5 rounded-full font-bold uppercase">
+                            Co-manager
+                          </span>
+                        )}
+                        {e.isLocked && (
+                          <span className="bg-emerald-100 text-emerald-700 text-[10px] px-2 py-0.5 rounded-full font-bold uppercase mt-1">
+                            Confirmed
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+              
+              <button
+                onClick={() => setShowEventCreator(true)}
+                className="w-full p-4 bg-gray-50 rounded-2xl border-2 border-dashed border-gray-200 text-gray-500 hover:border-indigo-300 hover:text-indigo-600 transition-colors text-center"
+              >
+                + Create New Event
+              </button>
+            </div>
+          )}
         </main>
 
-        {/* Event Creation Modal */}
+        {/* Event Creator Modal */}
         {showEventCreator && (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
             <div className="bg-white rounded-2xl p-6 max-w-md w-full max-h-[90vh] overflow-y-auto">
               <div className="flex justify-between items-center mb-4">
                 <h3 className="font-bold text-gray-900">Create New Event</h3>
-                <button onClick={() => setShowEventCreator(false)} className="text-gray-400 hover:text-gray-600">✕</button>
+                <button onClick={() => setShowEventCreator(false)} className="text-gray-400 hover:text-gray-600 text-xl">✕</button>
               </div>
-              <EventCreationForm onSubmit={handleCreateEvent} />
+              <EventCreationForm onSubmit={(data) => {
+                handleCreateEvent(data);
+                setShowEventCreator(false);
+                setShowEventList(false);
+              }} />
             </div>
           </div>
         )}
       </div>
     );
+  }
+
+  // Safety check - should not happen given the logic above
+  if (!event) {
+    return null;
   }
 
   return (
@@ -1011,12 +1255,10 @@ const App: React.FC = () => {
 
 // Event Creation Form Component
 const EventCreationForm: React.FC<{
-  onSubmit: (data: { title: string; description: string; creatorName: string; creatorRole: 'Director' | 'Co-manager' | 'Member'; startDate: string; endDate: string; startTime: string; endTime: string }) => void;
+  onSubmit: (data: { title: string; description: string; startDate: string; endDate: string; startTime: string; endTime: string }) => void;
 }> = ({ onSubmit }) => {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
-  const [creatorName, setCreatorName] = useState('');
-  const [creatorRole, setCreatorRole] = useState<'Director' | 'Co-manager' | 'Member'>('Director');
   
   // Default to next week
   const today = new Date();
@@ -1039,7 +1281,7 @@ const EventCreationForm: React.FC<{
 
   const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!title.trim() || !creatorName.trim()) return;
+    if (!title.trim()) return;
     if (startDate > endDate) {
       alert('End date must be after start date');
       return;
@@ -1051,7 +1293,7 @@ const EventCreationForm: React.FC<{
       alert('End time must be after start time');
       return;
     }
-    onSubmit({ title, description, creatorName, creatorRole, startDate, endDate, startTime, endTime });
+    onSubmit({ title, description, startDate, endDate, startTime, endTime });
   };
 
   return (
@@ -1065,40 +1307,18 @@ const EventCreationForm: React.FC<{
           placeholder="e.g., Jazz Rehearsal"
           className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
           required
+          autoFocus
         />
       </div>
       <div>
-        <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Description</label>
+        <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Description (optional)</label>
         <textarea
           value={description}
           onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setDescription(e.target.value)}
           placeholder="Event description..."
-          rows={3}
+          rows={2}
           className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
         />
-      </div>
-      <div>
-        <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Your Name</label>
-        <input
-          type="text"
-          value={creatorName}
-          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCreatorName(e.target.value)}
-          placeholder="Enter your name"
-          className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
-          required
-        />
-      </div>
-      <div>
-        <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Your Role</label>
-        <select
-          value={creatorRole}
-          onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setCreatorRole(e.target.value as 'Director' | 'Co-manager' | 'Member')}
-          className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
-        >
-          <option value="Director">Director</option>
-          <option value="Co-manager">Co-manager</option>
-          <option value="Member">Member</option>
-        </select>
       </div>
       <div>
         <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Availability Date Range</label>
@@ -1624,6 +1844,42 @@ const AppleCalendarFormModal: React.FC<{
         </form>
       </div>
     </div>
+  );
+};
+
+// Login Form Component
+const LoginForm: React.FC<{
+  onLogin: (name: string) => void;
+}> = ({ onLogin }) => {
+  const [name, setName] = useState('');
+
+  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!name.trim()) return;
+    onLogin(name.trim());
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <div>
+        <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Your Name</label>
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Enter your name"
+          className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none text-gray-900"
+          required
+          autoFocus
+        />
+      </div>
+      <button
+        type="submit"
+        className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition-colors"
+      >
+        Continue
+      </button>
+    </form>
   );
 };
 
