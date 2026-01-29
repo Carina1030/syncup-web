@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { User, EventData, Message, AvailabilitySlot, CalendarEvent, ProposedTimeSlot, Logistics, MEMBER_BADGES } from './types';
 import { TIME_SLOTS, ALL_TIME_SLOTS, Icons } from './constants';
 import AvailabilityGrid from './components/AvailabilityGrid';
@@ -8,11 +8,11 @@ import { parseLogisticsFromChat } from './services/geminiService';
 import { fetchUserCalendar, checkAppleCalendarAuth, authenticateAppleCalendar, disconnectAppleCalendar } from './services/calendarService';
 import { getDatesInRange, formatDateShort } from './utils/dateUtils';
 import { analyzeAvailability } from './utils/availabilityAnalysis';
+import { saveEvent, getEvent, subscribeToEvent, getUserEvents } from './services/firebase';
 
 // Storage keys
 const STORAGE_KEYS = {
   USER: 'syncup_user',
-  EVENTS: 'syncup_events',
 };
 
 // Load from localStorage
@@ -51,18 +51,62 @@ const App: React.FC = () => {
   const [inviteEventId, setInviteEventId] = useState<string | null>(null);
   const [showLoginForm, setShowLoginForm] = useState(false);
   
-  // Multi-event support - load from localStorage
-  const [events, setEvents] = useState<EventData[]>(() => loadFromStorage(STORAGE_KEYS.EVENTS, []));
+  // Multi-event support
+  const [events, setEvents] = useState<EventData[]>([]);
   const [currentEventId, setCurrentEventId] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<User | null>(() => loadFromStorage(STORAGE_KEYS.USER, null));
   const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => loadFromStorage(STORAGE_KEYS.USER, null) !== null);
+  const [isLoading, setIsLoading] = useState(true);
 
   const [activeTab, setActiveTab] = useState<'grid' | 'logistics' | 'chat'>('grid');
+  
+  // Track subscriptions
+  const unsubscribeRef = useRef<(() => void) | null>(null);
 
-  // Save events to localStorage when they change
+  // Load user's events from Firebase on login
   useEffect(() => {
-    saveToStorage(STORAGE_KEYS.EVENTS, events);
-  }, [events]);
+    const loadUserEvents = async () => {
+      if (currentUser && isLoggedIn) {
+        setIsLoading(true);
+        try {
+          const userEvents = await getUserEvents(currentUser.id);
+          setEvents(userEvents);
+        } catch (error) {
+          console.error('Failed to load events from Firebase:', error);
+        }
+        setIsLoading(false);
+      } else {
+        setEvents([]);
+        setIsLoading(false);
+      }
+    };
+    loadUserEvents();
+  }, [currentUser?.id, isLoggedIn]);
+
+  // Subscribe to current event for real-time updates
+  useEffect(() => {
+    // Cleanup previous subscription
+    if (unsubscribeRef.current) {
+      unsubscribeRef.current();
+      unsubscribeRef.current = null;
+    }
+
+    if (currentEventId) {
+      unsubscribeRef.current = subscribeToEvent(currentEventId, (updatedEvent) => {
+        if (updatedEvent) {
+          setEvents(prev => 
+            prev.map(e => e.id === currentEventId ? updatedEvent : e)
+          );
+        }
+      });
+    }
+
+    return () => {
+      if (unsubscribeRef.current) {
+        unsubscribeRef.current();
+      }
+    };
+  }, [currentEventId]);
 
   // Save user to localStorage when it changes
   useEffect(() => {
@@ -70,6 +114,15 @@ const App: React.FC = () => {
       saveToStorage(STORAGE_KEYS.USER, currentUser);
     }
   }, [currentUser]);
+
+  // Helper to save event to Firebase
+  const saveEventToFirebase = useCallback(async (event: EventData) => {
+    try {
+      await saveEvent(event);
+    } catch (error) {
+      console.error('Failed to save event to Firebase:', error);
+    }
+  }, []);
 
   // Handle login
   const handleLogin = (name: string) => {
@@ -96,56 +149,31 @@ const App: React.FC = () => {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const eventId = params.get('join');
-    const encodedData = params.get('data');
     
     if (eventId && !showJoinForm) {
       setInviteEventId(eventId);
       setShowJoinForm(true);
       
-      // Check if event exists locally (use callback form to get latest state)
-      setEvents(prevEvents => {
-        const existingEvent = prevEvents.find(e => e.id === eventId);
-        
-        if (!existingEvent && encodedData) {
-          // Event doesn't exist locally, create it from URL data
-          try {
-            const eventData = JSON.parse(decodeURIComponent(atob(encodedData)));
-            
-            // Generate slots for the event
-            const startIdx = ALL_TIME_SLOTS.indexOf(eventData.timeRange.startTime as typeof ALL_TIME_SLOTS[number]);
-            const endIdx = ALL_TIME_SLOTS.indexOf(eventData.timeRange.endTime as typeof ALL_TIME_SLOTS[number]);
-            const selectedTimeSlots = ALL_TIME_SLOTS.slice(startIdx, endIdx + 1);
-            const dates = getDatesInRange(eventData.dateRange.startDate, eventData.dateRange.endDate);
-            const slots: AvailabilitySlot[] = [];
-            
-            dates.forEach((date: string) => {
-              selectedTimeSlots.forEach((time: string) => {
-                slots.push({ date, time, availableUsers: [] });
-              });
+      // Try to fetch event from Firebase
+      const fetchEventFromFirebase = async () => {
+        try {
+          const firebaseEvent = await getEvent(eventId);
+          if (firebaseEvent) {
+            // Event exists in Firebase, add it to local state if not already there
+            setEvents(prev => {
+              const exists = prev.some(e => e.id === eventId);
+              if (!exists) {
+                return [...prev, firebaseEvent];
+              }
+              return prev;
             });
-            
-            const newEvent: EventData = {
-              id: eventData.id,
-              title: eventData.title,
-              description: eventData.description || '',
-              creatorId: eventData.creatorId,
-              logistics: { venue: '', wardrobe: '', materials: '', notes: '' },
-              dateRange: eventData.dateRange,
-              timeRange: eventData.timeRange,
-              slots,
-              messages: [],
-              members: [], // Will be populated when user joins
-              isLocked: false
-            };
-            
-            return [...prevEvents, newEvent];
-          } catch (e) {
-            console.error('Failed to parse invite link data:', e);
-            return prevEvents;
           }
+        } catch (error) {
+          console.error('Failed to fetch event from Firebase:', error);
         }
-        return prevEvents;
-      });
+      };
+      
+      fetchEventFromFirebase();
     }
   }, [showJoinForm]);
 
@@ -154,9 +182,18 @@ const App: React.FC = () => {
 
   // Update current event helper
   const updateCurrentEvent = (updater: (prev: EventData) => EventData) => {
-    setEvents(prevEvents => 
-      prevEvents.map(e => e.id === currentEventId ? updater(e) : e)
-    );
+    setEvents(prevEvents => {
+      const newEvents = prevEvents.map(e => {
+        if (e.id === currentEventId) {
+          const updatedEvent = updater(e);
+          // Save to Firebase (async, don't await)
+          saveEventToFirebase(updatedEvent);
+          return updatedEvent;
+        }
+        return e;
+      });
+      return newEvents;
+    });
   };
 
   // Create new event
@@ -231,10 +268,21 @@ const App: React.FC = () => {
     setCurrentEventId(newEventId);
     setShowEventCreator(false);
     setShowEventList(false);
+    
+    // Save to Firebase
+    saveEventToFirebase(newEvent);
   };
 
   // Delete event
-  const handleDeleteEvent = (eventId: string) => {
+  const handleDeleteEvent = async (eventId: string) => {
+    // Delete from Firebase
+    try {
+      const { deleteEvent } = await import('./services/firebase');
+      await deleteEvent(eventId);
+    } catch (error) {
+      console.error('Failed to delete event from Firebase:', error);
+    }
+    
     setEvents(prev => prev.filter(e => e.id !== eventId));
     if (currentEventId === eventId) {
       const remaining = events.filter(e => e.id !== eventId);
@@ -355,24 +403,26 @@ const App: React.FC = () => {
       badge: memberData.badge
     };
     
-    setEvents(prev => prev.map(e => {
-      if (e.id !== inviteEventId) return e;
-      return {
-        ...e,
-        members: [...e.members, newMember],
-        messages: [
-          ...e.messages,
-          {
-            id: `sys-join-${Date.now()}`,
-            userId: 'system',
-            userName: 'SyncUp',
-            text: `${memberData.badge ? memberData.badge + ' ' : ''}${memberData.name} joined via invite link`,
-            timestamp: Date.now(),
-            isSystem: true
-          }
-        ]
-      };
-    }));
+    const updatedEvent = {
+      ...targetEvent,
+      members: [...targetEvent.members, newMember],
+      messages: [
+        ...targetEvent.messages,
+        {
+          id: `sys-join-${Date.now()}`,
+          userId: 'system',
+          userName: 'SyncUp',
+          text: `${memberData.badge ? memberData.badge + ' ' : ''}${memberData.name} joined via invite link`,
+          timestamp: Date.now(),
+          isSystem: true
+        }
+      ]
+    };
+    
+    setEvents(prev => prev.map(e => e.id === inviteEventId ? updatedEvent : e));
+    
+    // Save to Firebase
+    saveEventToFirebase(updatedEvent);
     
     setCurrentUser(newMember);
     setIsLoggedIn(true);
@@ -695,6 +745,18 @@ const App: React.FC = () => {
             </div>
           )}
         </main>
+      </div>
+    );
+  }
+
+  // Show loading state
+  if (isLoading && isLoggedIn) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center max-w-md mx-auto">
+        <div className="text-center">
+          <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-gray-600 font-medium">Loading your events...</p>
+        </div>
       </div>
     );
   }
