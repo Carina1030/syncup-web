@@ -69,7 +69,8 @@ const App: React.FC = () => {
       if (currentUser && isLoggedIn) {
         setIsLoading(true);
         try {
-          const userEvents = await getUserEvents(currentUser.id);
+          // Pass both ID and name to find all events (including historical ones with different IDs)
+          const userEvents = await getUserEvents(currentUser.id, currentUser.name);
           setEvents(userEvents);
         } catch (error) {
           console.error('Failed to load events from Firebase:', error);
@@ -381,7 +382,61 @@ const App: React.FC = () => {
       return;
     }
     
-    // Check if user with same name already exists in this event
+    // If user is already logged in, use their existing identity
+    if (currentUser && isLoggedIn) {
+      // Check if this user is already in this event (by ID)
+      const existingMemberById = targetEvent.members.find(m => m.id === currentUser.id);
+      if (existingMemberById) {
+        // Already a member, just switch to the event
+        setCurrentEventId(inviteEventId);
+        setShowJoinForm(false);
+        setInviteEventId(null);
+        window.history.replaceState({}, '', window.location.pathname);
+        return;
+      }
+      
+      // Add existing user to this event
+      const userForEvent: User = {
+        ...currentUser,
+        role: 'Member', // Always join as Member via invite link
+        badge: memberData.badge || currentUser.badge
+      };
+      
+      const updatedEvent = {
+        ...targetEvent,
+        members: [...targetEvent.members, userForEvent],
+        messages: [
+          ...targetEvent.messages,
+          {
+            id: `sys-join-${Date.now()}`,
+            userId: 'system',
+            userName: 'SyncUp',
+            text: `${userForEvent.badge ? userForEvent.badge + ' ' : ''}${userForEvent.name} joined via invite link`,
+            timestamp: Date.now(),
+            isSystem: true
+          }
+        ]
+      };
+      
+      setEvents(prev => {
+        const exists = prev.some(e => e.id === inviteEventId);
+        if (exists) {
+          return prev.map(e => e.id === inviteEventId ? updatedEvent : e);
+        }
+        return [...prev, updatedEvent];
+      });
+      
+      // Save to Firebase
+      saveEventToFirebase(updatedEvent);
+      
+      setCurrentEventId(inviteEventId);
+      setShowJoinForm(false);
+      setInviteEventId(null);
+      window.history.replaceState({}, '', window.location.pathname);
+      return;
+    }
+    
+    // Not logged in - check if user with same name already exists in this event
     const existingMember = targetEvent.members.find(m => m.name === memberData.name);
     if (existingMember) {
       // User already in this event, just switch to it
@@ -395,7 +450,7 @@ const App: React.FC = () => {
       return;
     }
     
-    // Create new member
+    // Create new user and add to event
     const newMember: User = {
       id: Math.random().toString(36).substr(2, 9),
       name: memberData.name,
@@ -419,7 +474,13 @@ const App: React.FC = () => {
       ]
     };
     
-    setEvents(prev => prev.map(e => e.id === inviteEventId ? updatedEvent : e));
+    setEvents(prev => {
+      const exists = prev.some(e => e.id === inviteEventId);
+      if (exists) {
+        return prev.map(e => e.id === inviteEventId ? updatedEvent : e);
+      }
+      return [...prev, updatedEvent];
+    });
     
     // Save to Firebase
     saveEventToFirebase(updatedEvent);
@@ -705,6 +766,8 @@ const App: React.FC = () => {
   // Show join form if accessing via invite link
   if (showJoinForm && inviteEventId) {
     const inviteEvent = events.find(e => e.id === inviteEventId);
+    const alreadyMember = inviteEvent && currentUser && inviteEvent.members.some(m => m.id === currentUser.id);
+    
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col max-w-md mx-auto relative shadow-2xl overflow-hidden">
         <header className="bg-white border-b border-gray-100 p-6">
@@ -723,11 +786,52 @@ const App: React.FC = () => {
                 </p>
                 <p className="text-xs text-indigo-500 mt-2">{inviteEvent.members.length} members</p>
               </div>
-              <JoinEventForm onSubmit={handleJoinViaLink} onCancel={() => {
-                setShowJoinForm(false);
-                setInviteEventId(null);
-                window.history.replaceState({}, '', window.location.pathname);
-              }} />
+              
+              {/* If user is already logged in, show quick join */}
+              {currentUser && isLoggedIn ? (
+                <div className="space-y-4">
+                  <div className="p-4 bg-green-50 rounded-xl border border-green-200">
+                    <p className="text-sm text-green-800">
+                      <span className="font-bold">Logged in as:</span> {currentUser.name}
+                    </p>
+                    {alreadyMember && (
+                      <p className="text-xs text-green-600 mt-1">You're already a member of this event!</p>
+                    )}
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => {
+                        setShowJoinForm(false);
+                        setInviteEventId(null);
+                        window.history.replaceState({}, '', window.location.pathname);
+                      }}
+                      className="flex-1 px-4 py-2 border border-gray-200 rounded-xl text-gray-700 hover:bg-gray-50 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={() => handleJoinViaLink({ name: currentUser.name, badge: currentUser.badge })}
+                      className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-colors font-bold"
+                    >
+                      {alreadyMember ? 'Go to Event' : 'Join Event'}
+                    </button>
+                  </div>
+                  <button
+                    onClick={() => {
+                      handleLogout();
+                    }}
+                    className="w-full text-gray-500 text-sm hover:text-gray-700"
+                  >
+                    Join as different user
+                  </button>
+                </div>
+              ) : (
+                <JoinEventForm onSubmit={handleJoinViaLink} onCancel={() => {
+                  setShowJoinForm(false);
+                  setInviteEventId(null);
+                  window.history.replaceState({}, '', window.location.pathname);
+                }} />
+              )}
             </div>
           ) : (
             <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 text-center">

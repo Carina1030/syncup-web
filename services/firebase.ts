@@ -105,16 +105,19 @@ export function subscribeToEvent(
   return unsubscribe;
 }
 
-// Get all events for a user (by member ID)
-export async function getUserEvents(userId: string): Promise<EventData[]> {
+// Get all events for a user (by member ID or name)
+export async function getUserEvents(userId: string, userName?: string): Promise<EventData[]> {
   try {
     const querySnapshot = await getDocs(eventsCollection);
     const events: EventData[] = [];
     
     querySnapshot.forEach((doc) => {
       const event = doc.data() as EventData;
-      // Check if user is a member of this event
-      if (event.members.some(m => m.id === userId)) {
+      // Check if user is a member of this event (by ID or name)
+      const isMember = event.members.some(m => 
+        m.id === userId || (userName && m.name === userName)
+      );
+      if (isMember) {
         events.push(event);
       }
     });
