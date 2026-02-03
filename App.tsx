@@ -1073,19 +1073,6 @@ const App: React.FC = () => {
                 <div className="w-1.5 h-1.5 bg-indigo-500 rounded-full"></div>
                 <span className="text-[10px] font-bold text-indigo-700 uppercase tracking-widest">{currentUser.role}</span>
              </div>
-             <button 
-              onClick={() => {
-                if (!event || !currentUser) return;
-                const currentIndex = event.members.findIndex((m: User) => m.id === currentUser.id);
-                if (currentIndex === -1) return;
-                const nextIndex = (currentIndex + 1) % event.members.length;
-                setCurrentUser(event.members[nextIndex]);
-                setCalendarEvents([]); // Clear calendar on user switch
-              }}
-              className="text-[9px] text-gray-400 mt-2 underline"
-             >
-               Switch User
-             </button>
           </div>
         </div>
         
