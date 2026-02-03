@@ -12,6 +12,14 @@ import {
   where,
   getDocs
 } from "firebase/firestore";
+import {
+  getAuth,
+  signInWithPopup,
+  GoogleAuthProvider,
+  signOut,
+  onAuthStateChanged,
+  User as FirebaseUser
+} from "firebase/auth";
 import { EventData } from "../types";
 
 // Firebase configuration
@@ -28,6 +36,45 @@ const firebaseConfig = {
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
+const auth = getAuth(app);
+const googleProvider = new GoogleAuthProvider();
+
+// ============ Authentication Functions ============
+
+// Sign in with Google
+export async function signInWithGoogle(): Promise<FirebaseUser | null> {
+  try {
+    const result = await signInWithPopup(auth, googleProvider);
+    console.log("Google sign in successful:", result.user.email);
+    return result.user;
+  } catch (error) {
+    console.error("Error signing in with Google:", error);
+    throw error;
+  }
+}
+
+// Sign out
+export async function signOutUser(): Promise<void> {
+  try {
+    await signOut(auth);
+    console.log("User signed out");
+  } catch (error) {
+    console.error("Error signing out:", error);
+    throw error;
+  }
+}
+
+// Subscribe to auth state changes
+export function subscribeToAuthState(
+  callback: (user: FirebaseUser | null) => void
+): () => void {
+  return onAuthStateChanged(auth, callback);
+}
+
+// Get current user
+export function getCurrentUser(): FirebaseUser | null {
+  return auth.currentUser;
+}
 
 // Collection reference
 const eventsCollection = collection(db, "events");
@@ -147,4 +194,4 @@ export function subscribeToAllEvents(
   return unsubscribe;
 }
 
-export { db };
+export { db, auth };

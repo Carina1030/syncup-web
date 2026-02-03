@@ -4,6 +4,8 @@ export interface User {
   name: string;
   role: 'Director' | 'Co-manager' | 'Member';
   badge?: string; // e.g., "💃 Dancer", "📷 Photographer", "🎤 Singer"
+  email?: string; // Google email for identification
+  photoURL?: string; // Google profile photo
 }
 
 // Preset badges for quick selection
