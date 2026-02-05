@@ -13,6 +13,7 @@ import { saveEvent, getEvent, subscribeToEvent, getUserEvents, signInWithGoogle,
 // Storage keys
 const STORAGE_KEYS = {
   USER: 'syncup_user',
+  CURRENT_EVENT: 'syncup_current_event',
 };
 
 // Load from localStorage
@@ -53,7 +54,7 @@ const App: React.FC = () => {
   
   // Multi-event support
   const [events, setEvents] = useState<EventData[]>([]);
-  const [currentEventId, setCurrentEventId] = useState<string | null>(null);
+  const [currentEventId, setCurrentEventId] = useState<string | null>(() => loadFromStorage(STORAGE_KEYS.CURRENT_EVENT, null));
   const [currentUser, setCurrentUser] = useState<User | null>(() => loadFromStorage(STORAGE_KEYS.USER, null));
   const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => loadFromStorage(STORAGE_KEYS.USER, null) !== null);
   const [isLoading, setIsLoading] = useState(true);
@@ -71,24 +72,22 @@ const App: React.FC = () => {
         try {
           // Pass both ID and name to find all events (including historical ones with different IDs)
           const userEvents = await getUserEvents(currentUser.id, currentUser.name);
+          let finalEvents = [...userEvents];
           
           // If there's an invite event ID, make sure we keep that event too
-          if (inviteEventId) {
-            const inviteEventExists = userEvents.some(e => e.id === inviteEventId);
-            if (!inviteEventExists) {
-              // Fetch the invite event from Firebase and add it
-              const inviteEvent = await getEvent(inviteEventId);
-              if (inviteEvent) {
-                setEvents([...userEvents, inviteEvent]);
-              } else {
-                setEvents(userEvents);
+          const eventIdToFetch = inviteEventId || currentEventId;
+          if (eventIdToFetch) {
+            const eventExists = userEvents.some(e => e.id === eventIdToFetch);
+            if (!eventExists) {
+              // Fetch the event from Firebase and add it
+              const fetchedEvent = await getEvent(eventIdToFetch);
+              if (fetchedEvent) {
+                finalEvents = [...userEvents, fetchedEvent];
               }
-            } else {
-              setEvents(userEvents);
             }
-          } else {
-            setEvents(userEvents);
           }
+          
+          setEvents(finalEvents);
         } catch (error) {
           console.error('Failed to load events from Firebase:', error);
         }
@@ -104,7 +103,7 @@ const App: React.FC = () => {
       }
     };
     loadUserEvents();
-  }, [currentUser?.id, isLoggedIn, inviteEventId]);
+  }, [currentUser?.id, isLoggedIn, inviteEventId, currentEventId]);
 
   // Subscribe to current event for real-time updates
   useEffect(() => {
@@ -137,6 +136,15 @@ const App: React.FC = () => {
       saveToStorage(STORAGE_KEYS.USER, currentUser);
     }
   }, [currentUser]);
+
+  // Save currentEventId to localStorage when it changes
+  useEffect(() => {
+    if (currentEventId) {
+      saveToStorage(STORAGE_KEYS.CURRENT_EVENT, currentEventId);
+    } else {
+      localStorage.removeItem(STORAGE_KEYS.CURRENT_EVENT);
+    }
+  }, [currentEventId]);
 
   // Subscribe to Firebase Auth state changes
   useEffect(() => {
@@ -1192,8 +1200,19 @@ const App: React.FC = () => {
     );
   }
 
-  // Safety check - should not happen given the logic above
+  // Safety check - if event not found, show loading or redirect to event list
   if (!event) {
+    // If we have a currentEventId but event not found, try to fetch it
+    if (currentEventId) {
+      return (
+        <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center max-w-md mx-auto">
+          <div className="text-center">
+            <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+            <p className="text-gray-600 font-medium">Loading event...</p>
+          </div>
+        </div>
+      );
+    }
     return null;
   }
 
