@@ -71,18 +71,40 @@ const App: React.FC = () => {
         try {
           // Pass both ID and name to find all events (including historical ones with different IDs)
           const userEvents = await getUserEvents(currentUser.id, currentUser.name);
-          setEvents(userEvents);
+          
+          // If there's an invite event ID, make sure we keep that event too
+          if (inviteEventId) {
+            const inviteEventExists = userEvents.some(e => e.id === inviteEventId);
+            if (!inviteEventExists) {
+              // Fetch the invite event from Firebase and add it
+              const inviteEvent = await getEvent(inviteEventId);
+              if (inviteEvent) {
+                setEvents([...userEvents, inviteEvent]);
+              } else {
+                setEvents(userEvents);
+              }
+            } else {
+              setEvents(userEvents);
+            }
+          } else {
+            setEvents(userEvents);
+          }
         } catch (error) {
           console.error('Failed to load events from Firebase:', error);
         }
         setIsLoading(false);
       } else {
-        setEvents([]);
+        // Not logged in - but if there's an invite event, keep it
+        if (inviteEventId) {
+          setEvents(prev => prev.filter(e => e.id === inviteEventId));
+        } else {
+          setEvents([]);
+        }
         setIsLoading(false);
       }
     };
     loadUserEvents();
-  }, [currentUser?.id, isLoggedIn]);
+  }, [currentUser?.id, isLoggedIn, inviteEventId]);
 
   // Subscribe to current event for real-time updates
   useEffect(() => {
