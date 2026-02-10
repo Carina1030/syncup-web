@@ -51,6 +51,7 @@ const App: React.FC = () => {
   const [showJoinForm, setShowJoinForm] = useState(false);
   const [inviteEventId, setInviteEventId] = useState<string | null>(null);
   const [showLoginForm, setShowLoginForm] = useState(false);
+  const [showEventMenu, setShowEventMenu] = useState(false);
   
   // Multi-event support
   const [events, setEvents] = useState<EventData[]>([]);
@@ -449,8 +450,55 @@ const App: React.FC = () => {
     }));
   };
 
+  // Leave event (for current user)
+  const handleLeaveEvent = async () => {
+    if (!event || !currentUser) return;
+    
+    // Creator cannot leave their own event
+    if (currentUser.id === event.creatorId) {
+      alert("As the creator, you cannot leave this event. You can delete it instead.");
+      return;
+    }
+    
+    if (!confirm(`Are you sure you want to leave "${event.title}"?`)) {
+      return;
+    }
+    
+    const updatedEvent = {
+      ...event,
+      members: event.members.filter(m => m.id !== currentUser.id),
+      slots: event.slots.map(slot => ({
+        ...slot,
+        availableUsers: slot.availableUsers.filter(id => id !== currentUser.id)
+      })),
+      messages: [
+        ...event.messages,
+        {
+          id: `sys-leave-${Date.now()}`,
+          userId: 'system',
+          userName: 'SyncUp',
+          text: `${currentUser.name} left the event`,
+          timestamp: Date.now(),
+          isSystem: true
+        }
+      ]
+    };
+    
+    // Save to Firebase
+    try {
+      await saveEvent(updatedEvent);
+    } catch (error) {
+      console.error('Failed to save event:', error);
+    }
+    
+    // Remove from local events and go to event list
+    setEvents(prev => prev.filter(e => e.id !== event.id));
+    setCurrentEventId(null);
+    setShowEventMenu(false);
+  };
+
   // Join event via invite link
-  const handleJoinViaLink = (memberData: { name: string; badge?: string }) => {
+  const handleJoinViaLink = async (memberData: { name: string; badge?: string }) => {
     if (!inviteEventId) return;
     
     const targetEvent = events.find(e => e.id === inviteEventId);
@@ -498,6 +546,14 @@ const App: React.FC = () => {
         ]
       };
       
+      // Save to Firebase FIRST, then update local state
+      try {
+        await saveEvent(updatedEvent);
+        console.log('Event saved to Firebase successfully');
+      } catch (error) {
+        console.error('Failed to save event to Firebase:', error);
+      }
+      
       setEvents(prev => {
         const exists = prev.some(e => e.id === inviteEventId);
         if (exists) {
@@ -505,9 +561,6 @@ const App: React.FC = () => {
         }
         return [...prev, updatedEvent];
       });
-      
-      // Save to Firebase
-      saveEventToFirebase(updatedEvent);
       
       setCurrentEventId(inviteEventId);
       setShowJoinForm(false);
@@ -554,6 +607,14 @@ const App: React.FC = () => {
       ]
     };
     
+    // Save to Firebase FIRST, then update local state
+    try {
+      await saveEvent(updatedEvent);
+      console.log('Event saved to Firebase successfully');
+    } catch (error) {
+      console.error('Failed to save event to Firebase:', error);
+    }
+    
     setEvents(prev => {
       const exists = prev.some(e => e.id === inviteEventId);
       if (exists) {
@@ -561,9 +622,6 @@ const App: React.FC = () => {
       }
       return [...prev, updatedEvent];
     });
-    
-    // Save to Firebase
-    saveEventToFirebase(updatedEvent);
     
     setCurrentUser(newMember);
     setIsLoggedIn(true);
@@ -841,7 +899,10 @@ const App: React.FC = () => {
     }));
   };
 
-  const canEdit = !!(currentUser && (currentUser.role === 'Director' || currentUser.role === 'Co-manager'));
+  // Get user's role in current event (not their global role)
+  const memberInCurrentEvent = event?.members.find(m => m.id === currentUser?.id);
+  const roleInCurrentEvent = memberInCurrentEvent?.role || currentUser?.role;
+  const canEdit = !!(currentUser && (roleInCurrentEvent === 'Director' || roleInCurrentEvent === 'Co-manager'));
 
   // Show join form if accessing via invite link
   if (showJoinForm && inviteEventId) {
@@ -1234,7 +1295,7 @@ const App: React.FC = () => {
               <p className="text-[10px] text-gray-400 mt-0.5">{events.length} events total</p>
             )}
           </div>
-          <div className="flex flex-col items-end">
+          <div className="flex items-center gap-2">
              {(() => {
                // Get user's role in THIS event (not their global role)
                const memberInEvent = event.members.find(m => m.id === currentUser.id);
@@ -1246,6 +1307,68 @@ const App: React.FC = () => {
                  </div>
                );
              })()}
+             {/* Event Menu Button */}
+             <div className="relative">
+               <button
+                 onClick={() => setShowEventMenu(!showEventMenu)}
+                 className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+               >
+                 <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                   <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z" />
+                 </svg>
+               </button>
+               
+               {/* Dropdown Menu */}
+               {showEventMenu && (
+                 <>
+                 {/* Overlay to close menu */}
+                 <div 
+                   className="fixed inset-0 z-40" 
+                   onClick={() => setShowEventMenu(false)}
+                 />
+                 <div className="absolute right-0 top-full mt-1 w-48 bg-white rounded-xl shadow-lg border border-gray-100 py-1 z-50">
+                   <button
+                     onClick={handleCopyInviteLink}
+                     className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                   >
+                     🔗 Copy Invite Link
+                   </button>
+                   {canEdit && (
+                     <button
+                       onClick={() => {
+                         setShowMemberManager(true);
+                         setShowEventMenu(false);
+                       }}
+                       className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                     >
+                       👥 Manage Members
+                     </button>
+                   )}
+                   <div className="h-px bg-gray-100 my-1"></div>
+                   {currentUser?.id !== event.creatorId ? (
+                     <button
+                       onClick={handleLeaveEvent}
+                       className="w-full px-4 py-2 text-left text-sm text-rose-600 hover:bg-rose-50 flex items-center gap-2"
+                     >
+                       🚪 Leave Event
+                     </button>
+                   ) : (
+                     <button
+                       onClick={() => {
+                         if (confirm(`Delete "${event.title}"? This cannot be undone.`)) {
+                           handleDeleteEvent(event.id);
+                           setShowEventMenu(false);
+                         }
+                       }}
+                       className="w-full px-4 py-2 text-left text-sm text-rose-600 hover:bg-rose-50 flex items-center gap-2"
+                     >
+                       🗑️ Delete Event
+                     </button>
+                   )}
+                 </div>
+                 </>
+               )}
+             </div>
           </div>
         </div>
         
