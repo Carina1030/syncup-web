@@ -78,6 +78,11 @@ const App: React.FC = () => {
   
   // Track subscriptions
   const unsubscribeRef = useRef<(() => void) | null>(null);
+  
+  // Debounce ref for Firebase saves
+  const saveDebounceRef = useRef<NodeJS.Timeout | null>(null);
+  const isLocalEditingRef = useRef(false);
+  const lastLocalEditTimeRef = useRef(0);
 
   // Load user's events from Firebase on login
   useEffect(() => {
@@ -131,6 +136,14 @@ const App: React.FC = () => {
     if (currentEventId) {
       unsubscribeRef.current = subscribeToEvent(currentEventId, (updatedEvent) => {
         if (updatedEvent) {
+          // Skip Firebase updates if we're currently editing locally
+          // This prevents Firebase updates from overwriting local changes during drag operations
+          const timeSinceLastEdit = Date.now() - lastLocalEditTimeRef.current;
+          if (isLocalEditingRef.current || timeSinceLastEdit < 1500) {
+            console.log('Skipping Firebase update during local edit');
+            return;
+          }
+          
           setEvents(prev => 
             prev.map(e => e.id === currentEventId ? updatedEvent : e)
           );
@@ -518,21 +531,49 @@ const App: React.FC = () => {
   // Get current event
   const event = events.find(e => e.id === currentEventId) || null;
 
-  // Update current event helper
-  const updateCurrentEvent = (updater: (prev: EventData) => EventData) => {
+  // Debounced save to Firebase - waits for user to stop editing before saving
+  const debouncedSaveToFirebase = useCallback((eventToSave: EventData) => {
+    // Clear any existing timeout
+    if (saveDebounceRef.current) {
+      clearTimeout(saveDebounceRef.current);
+    }
+    
+    // Mark that we're editing
+    isLocalEditingRef.current = true;
+    lastLocalEditTimeRef.current = Date.now();
+    
+    // Set new timeout - save after 500ms of no changes
+    saveDebounceRef.current = setTimeout(async () => {
+      isLocalEditingRef.current = false;
+      try {
+        await saveEvent(eventToSave);
+        console.log('Debounced save completed');
+      } catch (error) {
+        console.error('Failed to save event:', error);
+      }
+    }, 500);
+  }, []);
+
+  // Update current event helper with debounced Firebase save
+  const updateCurrentEvent = useCallback((updater: (prev: EventData) => EventData) => {
     setEvents(prevEvents => {
+      let updatedEvent: EventData | null = null;
       const newEvents = prevEvents.map(e => {
         if (e.id === currentEventId) {
-          const updatedEvent = updater(e);
-          // Save to Firebase (async, don't await)
-          saveEventToFirebase(updatedEvent);
+          updatedEvent = updater(e);
           return updatedEvent;
         }
         return e;
       });
+      
+      // Debounced save to Firebase
+      if (updatedEvent) {
+        debouncedSaveToFirebase(updatedEvent);
+      }
+      
       return newEvents;
     });
-  };
+  }, [currentEventId, debouncedSaveToFirebase]);
 
   // Create new event
   const handleCreateEvent = (eventData: { 
@@ -1068,6 +1109,37 @@ const App: React.FC = () => {
       })
     }));
   };
+
+  // Batch toggle availability - more efficient for drag/multi-select operations
+  const handleBatchToggleAvailability = useCallback((updates: Array<{ date: string; time: string; isAvailable: boolean }>) => {
+    if (!event || !currentUser || updates.length === 0) return;
+    
+    // Filter out conflicts for 'select' operations
+    const validUpdates = updates.filter(update => {
+      if (update.isAvailable) {
+        const conflict = calendarEvents.find((e: CalendarEvent) => e.startTime === update.time);
+        return !conflict;
+      }
+      return true;
+    });
+    
+    if (validUpdates.length === 0) return;
+    
+    // Apply all updates in a single state update
+    updateCurrentEvent(prev => ({
+      ...prev,
+      slots: prev.slots.map((slot: AvailabilitySlot) => {
+        const update = validUpdates.find(u => u.date === slot.date && u.time === slot.time);
+        if (update) {
+          const newUserList = update.isAvailable 
+            ? (slot.availableUsers.includes(currentUser.id) ? slot.availableUsers : [...slot.availableUsers, currentUser.id])
+            : slot.availableUsers.filter((id: string) => id !== currentUser.id);
+          return { ...slot, availableUsers: newUserList };
+        }
+        return slot;
+      })
+    }));
+  }, [event, currentUser, calendarEvents, updateCurrentEvent]);
 
   // Analyze availability and generate proposed time slots
   const handleAnalyzeAvailability = () => {
@@ -1823,6 +1895,7 @@ const App: React.FC = () => {
               dateRange={event.dateRange}
               timeRange={event.timeRange}
               onToggle={handleToggleAvailability}
+              onBatchToggle={handleBatchToggleAvailability}
               isLocked={event.isLocked}
               lockedSlot={event.lockedSlot}
               calendarEvents={calendarEvents}

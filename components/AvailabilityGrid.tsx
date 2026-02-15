@@ -10,6 +10,7 @@ interface AvailabilityGridProps {
   dateRange: DateRange;
   timeRange?: TimeRange; // Optional time range filter
   onToggle: (date: string, time: string, isAvailable: boolean) => void;
+  onBatchToggle?: (updates: Array<{ date: string; time: string; isAvailable: boolean }>) => void;
   isLocked: boolean;
   lockedSlot?: string;
   calendarEvents: CalendarEvent[];
@@ -35,6 +36,7 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
   dateRange,
   timeRange,
   onToggle,
+  onBatchToggle,
   isLocked,
   lockedSlot,
   calendarEvents,
@@ -175,46 +177,95 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
       }
     } else {
       // Apply changes to all dragged slots (multi-select)
-      draggedIndices.forEach(index => {
-        const time = TIME_SLOTS[index];
-        if (time) {
-          const conflict = getConflict(time);
-          // Skip if there's a conflict and trying to select
-          if (dragMode === 'select' && conflict) return;
-          onToggle(selectedDate, time, dragMode === 'select');
+      // Use batch toggle if available for better performance
+      if (onBatchToggle) {
+        const updates: Array<{ date: string; time: string; isAvailable: boolean }> = [];
+        draggedIndices.forEach(index => {
+          const time = TIME_SLOTS[index];
+          if (time) {
+            const conflict = getConflict(time);
+            // Skip if there's a conflict and trying to select
+            if (dragMode === 'select' && conflict) return;
+            updates.push({ date: selectedDate, time, isAvailable: dragMode === 'select' });
+          }
+        });
+        if (updates.length > 0) {
+          onBatchToggle(updates);
         }
-      });
+      } else {
+        // Fallback to individual toggles
+        draggedIndices.forEach(index => {
+          const time = TIME_SLOTS[index];
+          if (time) {
+            const conflict = getConflict(time);
+            // Skip if there's a conflict and trying to select
+            if (dragMode === 'select' && conflict) return;
+            onToggle(selectedDate, time, dragMode === 'select');
+          }
+        });
+      }
     }
     
     setIsDragging(false);
     setDraggedIndices(new Set());
     dragStartIndex.current = null;
     hasDragged.current = false;
-  }, [isDragging, draggedIndices, dragMode, selectedDate, onToggle, slots, currentUser.id]);
+  }, [isDragging, draggedIndices, dragMode, selectedDate, onToggle, onBatchToggle, slots, currentUser.id]);
 
   // Handle select all for current date
   const handleSelectAll = () => {
     if (isLocked) return;
-    TIME_SLOTS.forEach(time => {
-      const slot = slots.find(s => s.date === selectedDate && s.time === time);
-      const isAvailable = slot?.availableUsers.includes(currentUser.id) || false;
-      const conflict = getConflict(time);
-      if (!isAvailable && !conflict) {
-        onToggle(selectedDate, time, true);
+    
+    if (onBatchToggle) {
+      const updates: Array<{ date: string; time: string; isAvailable: boolean }> = [];
+      TIME_SLOTS.forEach(time => {
+        const slot = slots.find(s => s.date === selectedDate && s.time === time);
+        const isAvailable = slot?.availableUsers.includes(currentUser.id) || false;
+        const conflict = getConflict(time);
+        if (!isAvailable && !conflict) {
+          updates.push({ date: selectedDate, time, isAvailable: true });
+        }
+      });
+      if (updates.length > 0) {
+        onBatchToggle(updates);
       }
-    });
+    } else {
+      TIME_SLOTS.forEach(time => {
+        const slot = slots.find(s => s.date === selectedDate && s.time === time);
+        const isAvailable = slot?.availableUsers.includes(currentUser.id) || false;
+        const conflict = getConflict(time);
+        if (!isAvailable && !conflict) {
+          onToggle(selectedDate, time, true);
+        }
+      });
+    }
   };
 
   // Handle clear all for current date
   const handleClearAll = () => {
     if (isLocked) return;
-    TIME_SLOTS.forEach(time => {
-      const slot = slots.find(s => s.date === selectedDate && s.time === time);
-      const isAvailable = slot?.availableUsers.includes(currentUser.id) || false;
-      if (isAvailable) {
-        onToggle(selectedDate, time, false);
+    
+    if (onBatchToggle) {
+      const updates: Array<{ date: string; time: string; isAvailable: boolean }> = [];
+      TIME_SLOTS.forEach(time => {
+        const slot = slots.find(s => s.date === selectedDate && s.time === time);
+        const isAvailable = slot?.availableUsers.includes(currentUser.id) || false;
+        if (isAvailable) {
+          updates.push({ date: selectedDate, time, isAvailable: false });
+        }
+      });
+      if (updates.length > 0) {
+        onBatchToggle(updates);
       }
-    });
+    } else {
+      TIME_SLOTS.forEach(time => {
+        const slot = slots.find(s => s.date === selectedDate && s.time === time);
+        const isAvailable = slot?.availableUsers.includes(currentUser.id) || false;
+        if (isAvailable) {
+          onToggle(selectedDate, time, false);
+        }
+      });
+    }
   };
 
   // Count selected slots for current date
