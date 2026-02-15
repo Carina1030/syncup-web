@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { User, EventData, Message, AvailabilitySlot, CalendarEvent, ProposedTimeSlot, Logistics, MEMBER_BADGES } from './types';
+import { User, EventData, Message, AvailabilitySlot, CalendarEvent, ProposedTimeSlot, Logistics, MEMBER_BADGES, UserProfile, FriendRequest, EventInvitation } from './types';
 import { TIME_SLOTS, ALL_TIME_SLOTS, Icons } from './constants';
 import AvailabilityGrid from './components/AvailabilityGrid';
 import LogisticsHub from './components/LogisticsHub';
@@ -8,7 +8,13 @@ import { parseLogisticsFromChat } from './services/geminiService';
 import { fetchUserCalendar, checkAppleCalendarAuth, authenticateAppleCalendar, disconnectAppleCalendar } from './services/calendarService';
 import { getDatesInRange, formatDateShort } from './utils/dateUtils';
 import { analyzeAvailability } from './utils/availabilityAnalysis';
-import { saveEvent, getEvent, subscribeToEvent, getUserEvents, signInWithGoogle, signOutUser, subscribeToAuthState } from './services/firebase';
+import { 
+  saveEvent, getEvent, subscribeToEvent, getUserEvents, signInWithGoogle, signOutUser, subscribeToAuthState,
+  saveUserProfile, getUserProfile, getUserFriends,
+  sendFriendRequest, updateFriendRequestStatus, addFriend, removeFriend,
+  sendEventInvitation, updateEventInvitationStatus,
+  subscribeToEventInvitations, subscribeToFriendRequests
+} from './services/firebase';
 
 // Storage keys
 const STORAGE_KEYS = {
@@ -52,6 +58,14 @@ const App: React.FC = () => {
   const [inviteEventId, setInviteEventId] = useState<string | null>(null);
   const [showLoginForm, setShowLoginForm] = useState(false);
   const [showEventMenu, setShowEventMenu] = useState(false);
+  const [showFriendsModal, setShowFriendsModal] = useState(false);
+  const [showAddFriendModal, setShowAddFriendModal] = useState(false);
+  const [showInviteFriendsModal, setShowInviteFriendsModal] = useState(false);
+  
+  // Friends and invitations
+  const [friends, setFriends] = useState<UserProfile[]>([]);
+  const [friendRequests, setFriendRequests] = useState<FriendRequest[]>([]);
+  const [eventInvitations, setEventInvitations] = useState<EventInvitation[]>([]);
   
   // Multi-event support
   const [events, setEvents] = useState<EventData[]>([]);
@@ -149,7 +163,7 @@ const App: React.FC = () => {
 
   // Subscribe to Firebase Auth state changes
   useEffect(() => {
-    const unsubscribe = subscribeToAuthState((firebaseUser) => {
+    const unsubscribe = subscribeToAuthState(async (firebaseUser) => {
       if (firebaseUser) {
         // User is signed in with Google
         const user: User = {
@@ -162,12 +176,58 @@ const App: React.FC = () => {
         setCurrentUser(user);
         setIsLoggedIn(true);
         saveToStorage(STORAGE_KEYS.USER, user);
+        
+        // Save/update user profile in Firebase
+        if (firebaseUser.email) {
+          const profile: UserProfile = {
+            id: firebaseUser.uid,
+            name: user.name,
+            email: firebaseUser.email.toLowerCase(),
+            photoURL: firebaseUser.photoURL || undefined,
+            friends: [],
+            createdAt: Date.now()
+          };
+          // Get existing profile to preserve friends list
+          const existingProfile = await getUserProfile(firebaseUser.uid);
+          if (existingProfile) {
+            profile.friends = existingProfile.friends || [];
+            profile.createdAt = existingProfile.createdAt;
+          }
+          await saveUserProfile(profile);
+        }
       }
       // Note: We don't auto-logout here to allow manual name login to persist
     });
 
     return () => unsubscribe();
   }, []);
+
+  // Load friends and subscribe to invitations when user logs in
+  useEffect(() => {
+    if (!currentUser?.id || !currentUser?.email) return;
+    
+    // Load friends list
+    const loadFriends = async () => {
+      const friendsList = await getUserFriends(currentUser.id);
+      setFriends(friendsList);
+    };
+    loadFriends();
+    
+    // Subscribe to friend requests
+    const unsubFriendReqs = subscribeToFriendRequests(currentUser.email, (requests) => {
+      setFriendRequests(requests);
+    });
+    
+    // Subscribe to event invitations
+    const unsubEventInvites = subscribeToEventInvitations(currentUser.id, (invites) => {
+      setEventInvitations(invites);
+    });
+    
+    return () => {
+      unsubFriendReqs();
+      unsubEventInvites();
+    };
+  }, [currentUser?.id, currentUser?.email]);
 
   // Helper to save event to Firebase
   const saveEventToFirebase = useCallback(async (event: EventData) => {
@@ -224,7 +284,203 @@ const App: React.FC = () => {
     setCurrentUser(null);
     setIsLoggedIn(false);
     setCurrentEventId(null);
+    setFriends([]);
+    setFriendRequests([]);
+    setEventInvitations([]);
     localStorage.removeItem(STORAGE_KEYS.USER);
+  };
+
+  // ============ Friend Functions ============
+  
+  // Send friend request by email
+  const handleSendFriendRequest = async (email: string) => {
+    if (!currentUser?.email) {
+      alert('You need to be logged in with Google to add friends.');
+      return;
+    }
+    
+    const normalizedEmail = email.toLowerCase().trim();
+    
+    if (normalizedEmail === currentUser.email.toLowerCase()) {
+      alert("You can't add yourself as a friend!");
+      return;
+    }
+    
+    // Check if already friends
+    const alreadyFriend = friends.some(f => f.email.toLowerCase() === normalizedEmail);
+    if (alreadyFriend) {
+      alert('This person is already your friend!');
+      return;
+    }
+    
+    const request: FriendRequest = {
+      id: Math.random().toString(36).substr(2, 9),
+      fromUserId: currentUser.id,
+      fromUserName: currentUser.name,
+      fromUserEmail: currentUser.email,
+      fromUserPhoto: currentUser.photoURL,
+      toUserEmail: normalizedEmail,
+      status: 'pending',
+      createdAt: Date.now()
+    };
+    
+    try {
+      await sendFriendRequest(request);
+      alert(`Friend request sent to ${email}!`);
+    } catch (error) {
+      console.error('Failed to send friend request:', error);
+      alert('Failed to send friend request. Please try again.');
+    }
+  };
+  
+  // Accept friend request
+  const handleAcceptFriendRequest = async (request: FriendRequest) => {
+    if (!currentUser) return;
+    
+    try {
+      // Update request status
+      await updateFriendRequestStatus(request.id, 'accepted');
+      
+      // Add each other as friends
+      await addFriend(currentUser.id, request.fromUserId);
+      await addFriend(request.fromUserId, currentUser.id);
+      
+      // Reload friends list
+      const friendsList = await getUserFriends(currentUser.id);
+      setFriends(friendsList);
+      
+      alert(`You are now friends with ${request.fromUserName}!`);
+    } catch (error) {
+      console.error('Failed to accept friend request:', error);
+      alert('Failed to accept friend request. Please try again.');
+    }
+  };
+  
+  // Reject friend request
+  const handleRejectFriendRequest = async (request: FriendRequest) => {
+    try {
+      await updateFriendRequestStatus(request.id, 'rejected');
+    } catch (error) {
+      console.error('Failed to reject friend request:', error);
+    }
+  };
+  
+  // Remove friend
+  const handleRemoveFriend = async (friendId: string) => {
+    if (!currentUser) return;
+    
+    const friend = friends.find(f => f.id === friendId);
+    if (!confirm(`Remove ${friend?.name || 'this friend'} from your friends list?`)) {
+      return;
+    }
+    
+    try {
+      await removeFriend(currentUser.id, friendId);
+      setFriends(prev => prev.filter(f => f.id !== friendId));
+    } catch (error) {
+      console.error('Failed to remove friend:', error);
+      alert('Failed to remove friend. Please try again.');
+    }
+  };
+  
+  // ============ Event Invitation Functions ============
+  
+  // Invite friend to current event
+  const handleInviteFriendToEvent = async (friend: UserProfile) => {
+    if (!currentUser || !event) return;
+    
+    // Check if already a member
+    if (event.members.some(m => m.id === friend.id)) {
+      alert(`${friend.name} is already a member of this event.`);
+      return;
+    }
+    
+    const invitation: EventInvitation = {
+      id: Math.random().toString(36).substr(2, 9),
+      eventId: event.id,
+      eventTitle: event.title,
+      fromUserId: currentUser.id,
+      fromUserName: currentUser.name,
+      toUserId: friend.id,
+      toUserEmail: friend.email,
+      status: 'pending',
+      createdAt: Date.now()
+    };
+    
+    try {
+      await sendEventInvitation(invitation);
+      alert(`Invitation sent to ${friend.name}!`);
+    } catch (error) {
+      console.error('Failed to send invitation:', error);
+      alert('Failed to send invitation. Please try again.');
+    }
+  };
+  
+  // Accept event invitation
+  const handleAcceptEventInvitation = async (invitation: EventInvitation) => {
+    if (!currentUser) return;
+    
+    try {
+      // Get the event
+      const eventToJoin = await getEvent(invitation.eventId);
+      if (!eventToJoin) {
+        alert('Event not found. It may have been deleted.');
+        await updateEventInvitationStatus(invitation.id, 'rejected');
+        return;
+      }
+      
+      // Add user to event
+      const userForEvent: User = {
+        id: currentUser.id,
+        name: currentUser.name,
+        role: 'Member',
+        email: currentUser.email,
+        photoURL: currentUser.photoURL
+      };
+      
+      const updatedEvent = {
+        ...eventToJoin,
+        members: [...eventToJoin.members, userForEvent],
+        messages: [
+          ...eventToJoin.messages,
+          {
+            id: `sys-invite-accept-${Date.now()}`,
+            userId: 'system',
+            userName: 'SyncUp',
+            text: `${currentUser.name} joined via invitation`,
+            timestamp: Date.now(),
+            isSystem: true
+          }
+        ]
+      };
+      
+      await saveEvent(updatedEvent);
+      await updateEventInvitationStatus(invitation.id, 'accepted');
+      
+      // Add to local events and switch to it
+      setEvents(prev => {
+        const exists = prev.some(e => e.id === invitation.eventId);
+        if (exists) {
+          return prev.map(e => e.id === invitation.eventId ? updatedEvent : e);
+        }
+        return [...prev, updatedEvent];
+      });
+      
+      setCurrentEventId(invitation.eventId);
+      alert(`You have joined "${invitation.eventTitle}"!`);
+    } catch (error) {
+      console.error('Failed to accept invitation:', error);
+      alert('Failed to join event. Please try again.');
+    }
+  };
+  
+  // Reject event invitation
+  const handleRejectEventInvitation = async (invitation: EventInvitation) => {
+    try {
+      await updateEventInvitationStatus(invitation.id, 'rejected');
+    } catch (error) {
+      console.error('Failed to reject invitation:', error);
+    }
   };
 
   // Check for invite link on load
@@ -1154,12 +1410,29 @@ const App: React.FC = () => {
                 <p className="text-gray-600 text-xs">{currentUser.name}</p>
               </div>
             </div>
-            <button
-              onClick={handleLogout}
-              className="text-xs text-gray-400 hover:text-gray-600 px-3 py-1 rounded-full border border-gray-200 hover:border-gray-300"
-            >
-              Logout
-            </button>
+            <div className="flex items-center gap-2">
+              {/* Friends Button with notification badge */}
+              <button
+                onClick={() => setShowFriendsModal(true)}
+                className="relative p-2 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+                title="Friends"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+                </svg>
+                {(friendRequests.length + eventInvitations.length) > 0 && (
+                  <span className="absolute -top-1 -right-1 w-5 h-5 bg-rose-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center">
+                    {friendRequests.length + eventInvitations.length}
+                  </span>
+                )}
+              </button>
+              <button
+                onClick={handleLogout}
+                className="text-xs text-gray-400 hover:text-gray-600 px-3 py-1 rounded-full border border-gray-200 hover:border-gray-300"
+              >
+                Logout
+              </button>
+            </div>
           </div>
         </header>
         
@@ -1257,6 +1530,33 @@ const App: React.FC = () => {
             </div>
           </div>
         )}
+
+        {/* Friends Modal */}
+        {showFriendsModal && (
+          <FriendsModal
+            friends={friends}
+            friendRequests={friendRequests}
+            eventInvitations={eventInvitations}
+            onClose={() => setShowFriendsModal(false)}
+            onAddFriend={() => {
+              setShowFriendsModal(false);
+              setShowAddFriendModal(true);
+            }}
+            onAcceptFriendRequest={handleAcceptFriendRequest}
+            onRejectFriendRequest={handleRejectFriendRequest}
+            onRemoveFriend={handleRemoveFriend}
+            onAcceptEventInvitation={handleAcceptEventInvitation}
+            onRejectEventInvitation={handleRejectEventInvitation}
+          />
+        )}
+
+        {/* Add Friend Modal */}
+        {showAddFriendModal && (
+          <AddFriendModal
+            onClose={() => setShowAddFriendModal(false)}
+            onSendRequest={handleSendFriendRequest}
+          />
+        )}
       </div>
     );
   }
@@ -1307,6 +1607,21 @@ const App: React.FC = () => {
                  </div>
                );
              })()}
+             {/* Friends Button with notification badge */}
+             <button
+               onClick={() => setShowFriendsModal(true)}
+               className="relative p-2 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+               title="Friends"
+             >
+               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+               </svg>
+               {(friendRequests.length + eventInvitations.length) > 0 && (
+                 <span className="absolute -top-1 -right-1 w-4 h-4 bg-rose-500 text-white text-[8px] font-bold rounded-full flex items-center justify-center">
+                   {friendRequests.length + eventInvitations.length}
+                 </span>
+               )}
+             </button>
              {/* Event Menu Button */}
              <div className="relative">
                <button
@@ -1333,6 +1648,17 @@ const App: React.FC = () => {
                    >
                      🔗 Copy Invite Link
                    </button>
+                   {friends.length > 0 && (
+                     <button
+                       onClick={() => {
+                         setShowInviteFriendsModal(true);
+                         setShowEventMenu(false);
+                       }}
+                       className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                     >
+                       📨 Invite Friends
+                     </button>
+                   )}
                    {canEdit && (
                      <button
                        onClick={() => {
@@ -1664,6 +1990,48 @@ const App: React.FC = () => {
           }}
           editingMember={editingMember}
           setEditingMember={setEditingMember}
+        />
+      )}
+
+      {/* Friends Modal */}
+      {showFriendsModal && (
+        <FriendsModal
+          friends={friends}
+          friendRequests={friendRequests}
+          eventInvitations={eventInvitations}
+          onClose={() => setShowFriendsModal(false)}
+          onAddFriend={() => {
+            setShowFriendsModal(false);
+            setShowAddFriendModal(true);
+          }}
+          onAcceptFriendRequest={handleAcceptFriendRequest}
+          onRejectFriendRequest={handleRejectFriendRequest}
+          onRemoveFriend={handleRemoveFriend}
+          onAcceptEventInvitation={handleAcceptEventInvitation}
+          onRejectEventInvitation={handleRejectEventInvitation}
+          onInviteToEvent={() => {
+            setShowFriendsModal(false);
+            setShowInviteFriendsModal(true);
+          }}
+          hasCurrentEvent={true}
+        />
+      )}
+
+      {/* Add Friend Modal */}
+      {showAddFriendModal && (
+        <AddFriendModal
+          onClose={() => setShowAddFriendModal(false)}
+          onSendRequest={handleSendFriendRequest}
+        />
+      )}
+
+      {/* Invite Friends to Event Modal */}
+      {showInviteFriendsModal && event && (
+        <InviteFriendsModal
+          friends={friends}
+          eventMembers={event.members}
+          onClose={() => setShowInviteFriendsModal(false)}
+          onInvite={handleInviteFriendToEvent}
         />
       )}
 
@@ -2402,6 +2770,336 @@ const JoinEventForm: React.FC<{
         </button>
       </div>
     </form>
+  );
+};
+
+// Friends Modal Component
+const FriendsModal: React.FC<{
+  friends: UserProfile[];
+  friendRequests: FriendRequest[];
+  eventInvitations: EventInvitation[];
+  onClose: () => void;
+  onAddFriend: () => void;
+  onAcceptFriendRequest: (request: FriendRequest) => void;
+  onRejectFriendRequest: (request: FriendRequest) => void;
+  onRemoveFriend: (friendId: string) => void;
+  onAcceptEventInvitation: (invitation: EventInvitation) => void;
+  onRejectEventInvitation: (invitation: EventInvitation) => void;
+  onInviteToEvent?: () => void;
+  hasCurrentEvent?: boolean;
+}> = ({ 
+  friends, friendRequests, eventInvitations, onClose, onAddFriend,
+  onAcceptFriendRequest, onRejectFriendRequest, onRemoveFriend,
+  onAcceptEventInvitation, onRejectEventInvitation, onInviteToEvent, hasCurrentEvent
+}) => {
+  const [activeTab, setActiveTab] = useState<'friends' | 'requests' | 'invitations'>('friends');
+  
+  const totalNotifications = friendRequests.length + eventInvitations.length;
+  
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl p-6 max-w-md w-full max-h-[80vh] overflow-hidden flex flex-col">
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="font-bold text-gray-900 text-lg">Friends</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">✕</button>
+        </div>
+        
+        {/* Tabs */}
+        <div className="flex gap-1 mb-4 bg-gray-100 p-1 rounded-xl">
+          <button
+            onClick={() => setActiveTab('friends')}
+            className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-colors ${
+              activeTab === 'friends' ? 'bg-white text-indigo-600 shadow-sm' : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            Friends ({friends.length})
+          </button>
+          <button
+            onClick={() => setActiveTab('requests')}
+            className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-colors relative ${
+              activeTab === 'requests' ? 'bg-white text-indigo-600 shadow-sm' : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            Requests
+            {friendRequests.length > 0 && (
+              <span className="ml-1 px-1.5 py-0.5 bg-rose-500 text-white text-[10px] rounded-full">
+                {friendRequests.length}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={() => setActiveTab('invitations')}
+            className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-colors ${
+              activeTab === 'invitations' ? 'bg-white text-indigo-600 shadow-sm' : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            Events
+            {eventInvitations.length > 0 && (
+              <span className="ml-1 px-1.5 py-0.5 bg-rose-500 text-white text-[10px] rounded-full">
+                {eventInvitations.length}
+              </span>
+            )}
+          </button>
+        </div>
+        
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto">
+          {activeTab === 'friends' && (
+            <div className="space-y-2">
+              {friends.length === 0 ? (
+                <div className="text-center py-8">
+                  <div className="text-4xl mb-2">👥</div>
+                  <p className="text-gray-500 text-sm">No friends yet</p>
+                  <p className="text-gray-400 text-xs mt-1">Add friends to invite them to events!</p>
+                </div>
+              ) : (
+                friends.map(friend => (
+                  <div key={friend.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-xl">
+                    <div className="flex items-center gap-3">
+                      {friend.photoURL ? (
+                        <img src={friend.photoURL} alt={friend.name} className="w-10 h-10 rounded-full" />
+                      ) : (
+                        <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 font-bold">
+                          {friend.name.charAt(0).toUpperCase()}
+                        </div>
+                      )}
+                      <div>
+                        <p className="font-medium text-gray-900">{friend.name}</p>
+                        <p className="text-xs text-gray-500">{friend.email}</p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => onRemoveFriend(friend.id)}
+                      className="text-gray-400 hover:text-rose-500 p-1"
+                      title="Remove friend"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+          
+          {activeTab === 'requests' && (
+            <div className="space-y-2">
+              {friendRequests.length === 0 ? (
+                <div className="text-center py-8">
+                  <div className="text-4xl mb-2">📬</div>
+                  <p className="text-gray-500 text-sm">No pending friend requests</p>
+                </div>
+              ) : (
+                friendRequests.map(request => (
+                  <div key={request.id} className="p-3 bg-indigo-50 rounded-xl border border-indigo-100">
+                    <div className="flex items-center gap-3 mb-3">
+                      {request.fromUserPhoto ? (
+                        <img src={request.fromUserPhoto} alt={request.fromUserName} className="w-10 h-10 rounded-full" />
+                      ) : (
+                        <div className="w-10 h-10 rounded-full bg-indigo-200 flex items-center justify-center text-indigo-600 font-bold">
+                          {request.fromUserName.charAt(0).toUpperCase()}
+                        </div>
+                      )}
+                      <div>
+                        <p className="font-medium text-gray-900">{request.fromUserName}</p>
+                        <p className="text-xs text-gray-500">{request.fromUserEmail}</p>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => onRejectFriendRequest(request)}
+                        className="flex-1 py-2 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50"
+                      >
+                        Decline
+                      </button>
+                      <button
+                        onClick={() => onAcceptFriendRequest(request)}
+                        className="flex-1 py-2 text-sm text-white bg-indigo-600 rounded-lg hover:bg-indigo-700"
+                      >
+                        Accept
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+          
+          {activeTab === 'invitations' && (
+            <div className="space-y-2">
+              {eventInvitations.length === 0 ? (
+                <div className="text-center py-8">
+                  <div className="text-4xl mb-2">📅</div>
+                  <p className="text-gray-500 text-sm">No pending event invitations</p>
+                </div>
+              ) : (
+                eventInvitations.map(invitation => (
+                  <div key={invitation.id} className="p-3 bg-green-50 rounded-xl border border-green-100">
+                    <p className="text-xs text-green-600 font-medium mb-1">Event Invitation</p>
+                    <p className="font-bold text-gray-900">{invitation.eventTitle}</p>
+                    <p className="text-xs text-gray-500 mt-1">From: {invitation.fromUserName}</p>
+                    <div className="flex gap-2 mt-3">
+                      <button
+                        onClick={() => onRejectEventInvitation(invitation)}
+                        className="flex-1 py-2 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50"
+                      >
+                        Decline
+                      </button>
+                      <button
+                        onClick={() => onAcceptEventInvitation(invitation)}
+                        className="flex-1 py-2 text-sm text-white bg-green-600 rounded-lg hover:bg-green-700"
+                      >
+                        Join Event
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+        
+        {/* Actions */}
+        <div className="mt-4 pt-4 border-t border-gray-100 flex gap-2">
+          <button
+            onClick={onAddFriend}
+            className="flex-1 py-2 bg-indigo-600 text-white rounded-xl font-medium hover:bg-indigo-700"
+          >
+            + Add Friend
+          </button>
+          {hasCurrentEvent && onInviteToEvent && (
+            <button
+              onClick={onInviteToEvent}
+              className="flex-1 py-2 bg-green-600 text-white rounded-xl font-medium hover:bg-green-700"
+            >
+              Invite to Event
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Add Friend Modal Component
+const AddFriendModal: React.FC<{
+  onClose: () => void;
+  onSendRequest: (email: string) => void;
+}> = ({ onClose, onSendRequest }) => {
+  const [email, setEmail] = useState('');
+  
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email.trim()) return;
+    onSendRequest(email.trim());
+    onClose();
+  };
+  
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl p-6 max-w-md w-full">
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="font-bold text-gray-900">Add Friend</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">✕</button>
+        </div>
+        
+        <p className="text-sm text-gray-600 mb-4">
+          Enter your friend's Gmail address to send them a friend request.
+        </p>
+        
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Email Address</label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="friend@gmail.com"
+              className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
+              required
+              autoFocus
+            />
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 py-2 border border-gray-200 rounded-xl text-gray-700 hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="flex-1 py-2 bg-indigo-600 text-white rounded-xl font-medium hover:bg-indigo-700"
+            >
+              Send Request
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+// Invite Friends to Event Modal
+const InviteFriendsModal: React.FC<{
+  friends: UserProfile[];
+  eventMembers: User[];
+  onClose: () => void;
+  onInvite: (friend: UserProfile) => void;
+}> = ({ friends, eventMembers, onClose, onInvite }) => {
+  const availableFriends = friends.filter(f => !eventMembers.some(m => m.id === f.id));
+  
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl p-6 max-w-md w-full max-h-[80vh] overflow-hidden flex flex-col">
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="font-bold text-gray-900">Invite Friends</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">✕</button>
+        </div>
+        
+        <div className="flex-1 overflow-y-auto">
+          {availableFriends.length === 0 ? (
+            <div className="text-center py-8">
+              <div className="text-4xl mb-2">✅</div>
+              <p className="text-gray-500 text-sm">All your friends are already in this event!</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {availableFriends.map(friend => (
+                <div key={friend.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-xl">
+                  <div className="flex items-center gap-3">
+                    {friend.photoURL ? (
+                      <img src={friend.photoURL} alt={friend.name} className="w-10 h-10 rounded-full" />
+                    ) : (
+                      <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 font-bold">
+                        {friend.name.charAt(0).toUpperCase()}
+                      </div>
+                    )}
+                    <div>
+                      <p className="font-medium text-gray-900">{friend.name}</p>
+                      <p className="text-xs text-gray-500">{friend.email}</p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => onInvite(friend)}
+                    className="px-3 py-1 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700"
+                  >
+                    Invite
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        
+        <button
+          onClick={onClose}
+          className="mt-4 py-2 w-full border border-gray-200 rounded-xl text-gray-700 hover:bg-gray-50"
+        >
+          Done
+        </button>
+      </div>
+    </div>
   );
 };
 

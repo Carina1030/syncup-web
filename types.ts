@@ -90,4 +90,49 @@ export interface EventData {
   lockedSlot?: string; // Format: "YYYY-MM-DD|HH:MM AM/PM"
   proposedTimeSlots?: ProposedTimeSlot[]; // Auto-generated common available slots
   approvedTimeSlot?: ProposedTimeSlot; // Director's selected time slot for approval
+  pendingInvites?: string[]; // List of user IDs who have been invited but not yet joined
+}
+
+// Friend relationship
+export interface Friend {
+  id: string;
+  name: string;
+  email: string;
+  photoURL?: string;
+  addedAt: number;
+}
+
+// Friend request
+export interface FriendRequest {
+  id: string;
+  fromUserId: string;
+  fromUserName: string;
+  fromUserEmail: string;
+  fromUserPhoto?: string;
+  toUserEmail: string;
+  status: 'pending' | 'accepted' | 'rejected';
+  createdAt: number;
+}
+
+// Event invitation (for inviting friends to events)
+export interface EventInvitation {
+  id: string;
+  eventId: string;
+  eventTitle: string;
+  fromUserId: string;
+  fromUserName: string;
+  toUserId: string;
+  toUserEmail: string;
+  status: 'pending' | 'accepted' | 'rejected';
+  createdAt: number;
+}
+
+// User profile stored in Firebase
+export interface UserProfile {
+  id: string;
+  name: string;
+  email: string;
+  photoURL?: string;
+  friends: string[]; // List of friend user IDs
+  createdAt: number;
 }

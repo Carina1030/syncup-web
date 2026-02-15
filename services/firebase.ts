@@ -20,7 +20,7 @@ import {
   onAuthStateChanged,
   User as FirebaseUser
 } from "firebase/auth";
-import { EventData } from "../types";
+import { EventData, UserProfile, FriendRequest, EventInvitation } from "../types";
 
 // Firebase configuration
 const firebaseConfig = {
@@ -188,6 +188,274 @@ export function subscribeToAllEvents(
     callback(events);
   }, (error) => {
     console.error("Error subscribing to events:", error);
+    callback([]);
+  });
+  
+  return unsubscribe;
+}
+
+// ============ User Profile Functions ============
+
+// Save or update user profile
+export async function saveUserProfile(profile: UserProfile): Promise<void> {
+  try {
+    const profileRef = doc(db, "users", profile.id);
+    await setDoc(profileRef, profile, { merge: true });
+    console.log("User profile saved:", profile.email);
+  } catch (error) {
+    console.error("Error saving user profile:", error);
+    throw error;
+  }
+}
+
+// Get user profile by ID
+export async function getUserProfile(userId: string): Promise<UserProfile | null> {
+  try {
+    const profileRef = doc(db, "users", userId);
+    const profileSnap = await getDoc(profileRef);
+    if (profileSnap.exists()) {
+      return profileSnap.data() as UserProfile;
+    }
+    return null;
+  } catch (error) {
+    console.error("Error getting user profile:", error);
+    return null;
+  }
+}
+
+// Find user by email
+export async function findUserByEmail(email: string): Promise<UserProfile | null> {
+  try {
+    const usersCollection = collection(db, "users");
+    const q = query(usersCollection, where("email", "==", email.toLowerCase()));
+    const querySnapshot = await getDocs(q);
+    
+    if (!querySnapshot.empty) {
+      return querySnapshot.docs[0].data() as UserProfile;
+    }
+    return null;
+  } catch (error) {
+    console.error("Error finding user by email:", error);
+    return null;
+  }
+}
+
+// ============ Friend Request Functions ============
+
+// Send friend request
+export async function sendFriendRequest(request: FriendRequest): Promise<void> {
+  try {
+    const requestRef = doc(db, "friendRequests", request.id);
+    await setDoc(requestRef, request);
+    console.log("Friend request sent to:", request.toUserEmail);
+  } catch (error) {
+    console.error("Error sending friend request:", error);
+    throw error;
+  }
+}
+
+// Get pending friend requests for a user (by email)
+export async function getPendingFriendRequests(userEmail: string): Promise<FriendRequest[]> {
+  try {
+    const requestsCollection = collection(db, "friendRequests");
+    const q = query(
+      requestsCollection, 
+      where("toUserEmail", "==", userEmail.toLowerCase()),
+      where("status", "==", "pending")
+    );
+    const querySnapshot = await getDocs(q);
+    
+    const requests: FriendRequest[] = [];
+    querySnapshot.forEach((doc) => {
+      requests.push(doc.data() as FriendRequest);
+    });
+    return requests;
+  } catch (error) {
+    console.error("Error getting friend requests:", error);
+    return [];
+  }
+}
+
+// Update friend request status
+export async function updateFriendRequestStatus(
+  requestId: string, 
+  status: 'accepted' | 'rejected'
+): Promise<void> {
+  try {
+    const requestRef = doc(db, "friendRequests", requestId);
+    await updateDoc(requestRef, { status });
+    console.log("Friend request updated:", requestId, status);
+  } catch (error) {
+    console.error("Error updating friend request:", error);
+    throw error;
+  }
+}
+
+// Add friend to user's friend list
+export async function addFriend(userId: string, friendId: string): Promise<void> {
+  try {
+    const userRef = doc(db, "users", userId);
+    const userSnap = await getDoc(userRef);
+    
+    if (userSnap.exists()) {
+      const userData = userSnap.data() as UserProfile;
+      const friends = userData.friends || [];
+      if (!friends.includes(friendId)) {
+        friends.push(friendId);
+        await updateDoc(userRef, { friends });
+      }
+    }
+  } catch (error) {
+    console.error("Error adding friend:", error);
+    throw error;
+  }
+}
+
+// Get user's friends
+export async function getUserFriends(userId: string): Promise<UserProfile[]> {
+  try {
+    const userProfile = await getUserProfile(userId);
+    if (!userProfile || !userProfile.friends || userProfile.friends.length === 0) {
+      return [];
+    }
+    
+    const friends: UserProfile[] = [];
+    for (const friendId of userProfile.friends) {
+      const friendProfile = await getUserProfile(friendId);
+      if (friendProfile) {
+        friends.push(friendProfile);
+      }
+    }
+    return friends;
+  } catch (error) {
+    console.error("Error getting user friends:", error);
+    return [];
+  }
+}
+
+// Remove friend
+export async function removeFriend(userId: string, friendId: string): Promise<void> {
+  try {
+    // Remove from user's friend list
+    const userRef = doc(db, "users", userId);
+    const userSnap = await getDoc(userRef);
+    if (userSnap.exists()) {
+      const userData = userSnap.data() as UserProfile;
+      const friends = (userData.friends || []).filter(id => id !== friendId);
+      await updateDoc(userRef, { friends });
+    }
+    
+    // Also remove from friend's list (mutual unfriend)
+    const friendRef = doc(db, "users", friendId);
+    const friendSnap = await getDoc(friendRef);
+    if (friendSnap.exists()) {
+      const friendData = friendSnap.data() as UserProfile;
+      const friendFriends = (friendData.friends || []).filter(id => id !== userId);
+      await updateDoc(friendRef, { friends: friendFriends });
+    }
+  } catch (error) {
+    console.error("Error removing friend:", error);
+    throw error;
+  }
+}
+
+// ============ Event Invitation Functions ============
+
+// Send event invitation to a friend
+export async function sendEventInvitation(invitation: EventInvitation): Promise<void> {
+  try {
+    const inviteRef = doc(db, "eventInvitations", invitation.id);
+    await setDoc(inviteRef, invitation);
+    console.log("Event invitation sent:", invitation.id);
+  } catch (error) {
+    console.error("Error sending event invitation:", error);
+    throw error;
+  }
+}
+
+// Get pending event invitations for a user
+export async function getPendingEventInvitations(userId: string): Promise<EventInvitation[]> {
+  try {
+    const invitesCollection = collection(db, "eventInvitations");
+    const q = query(
+      invitesCollection, 
+      where("toUserId", "==", userId),
+      where("status", "==", "pending")
+    );
+    const querySnapshot = await getDocs(q);
+    
+    const invitations: EventInvitation[] = [];
+    querySnapshot.forEach((doc) => {
+      invitations.push(doc.data() as EventInvitation);
+    });
+    return invitations;
+  } catch (error) {
+    console.error("Error getting event invitations:", error);
+    return [];
+  }
+}
+
+// Update event invitation status
+export async function updateEventInvitationStatus(
+  invitationId: string, 
+  status: 'accepted' | 'rejected'
+): Promise<void> {
+  try {
+    const inviteRef = doc(db, "eventInvitations", invitationId);
+    await updateDoc(inviteRef, { status });
+    console.log("Event invitation updated:", invitationId, status);
+  } catch (error) {
+    console.error("Error updating event invitation:", error);
+    throw error;
+  }
+}
+
+// Subscribe to user's event invitations (real-time)
+export function subscribeToEventInvitations(
+  userId: string,
+  callback: (invitations: EventInvitation[]) => void
+): () => void {
+  const invitesCollection = collection(db, "eventInvitations");
+  const q = query(
+    invitesCollection, 
+    where("toUserId", "==", userId),
+    where("status", "==", "pending")
+  );
+  
+  const unsubscribe = onSnapshot(q, (snapshot) => {
+    const invitations: EventInvitation[] = [];
+    snapshot.forEach((doc) => {
+      invitations.push(doc.data() as EventInvitation);
+    });
+    callback(invitations);
+  }, (error) => {
+    console.error("Error subscribing to invitations:", error);
+    callback([]);
+  });
+  
+  return unsubscribe;
+}
+
+// Subscribe to friend requests (real-time)
+export function subscribeToFriendRequests(
+  userEmail: string,
+  callback: (requests: FriendRequest[]) => void
+): () => void {
+  const requestsCollection = collection(db, "friendRequests");
+  const q = query(
+    requestsCollection, 
+    where("toUserEmail", "==", userEmail.toLowerCase()),
+    where("status", "==", "pending")
+  );
+  
+  const unsubscribe = onSnapshot(q, (snapshot) => {
+    const requests: FriendRequest[] = [];
+    snapshot.forEach((doc) => {
+      requests.push(doc.data() as FriendRequest);
+    });
+    callback(requests);
+  }, (error) => {
+    console.error("Error subscribing to friend requests:", error);
     callback([]);
   });
   
