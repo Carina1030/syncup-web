@@ -636,6 +636,29 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
                       {slot.availableUsers.length} / {members.length} available
                     </span>
                   </div>
+
+                  {/* Show who's available */}
+                  {slot.availableUsers.length > 0 && !isLockedSlot && (
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {slot.availableUsers.map(userId => {
+                        const member = members.find(m => m.id === userId);
+                        const name = member?.name || userId.slice(0, 6);
+                        const isMe = userId === currentUser.id;
+                        return (
+                          <span
+                            key={userId}
+                            className={`text-[9px] px-1.5 py-0.5 rounded-full ${
+                              isMe
+                                ? 'bg-indigo-100 text-indigo-700 font-bold'
+                                : 'bg-gray-100 text-gray-600'
+                            }`}
+                          >
+                            {isMe ? 'You' : name.split(' ')[0]}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
                   
                   {conflict && !isLockedSlot && (
                     <span className="text-[10px] text-rose-400 font-medium italic truncate max-w-[150px]">
@@ -684,12 +707,21 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
             )}
           </div>
           
-          <div className="space-y-2 max-h-48 overflow-y-auto">
+          {/* Show top slots: all-available first, then partial (>50%) */}
+          <div className="space-y-2 max-h-[300px] overflow-y-auto">
             {proposedTimeSlots
-              .filter(slot => slot.isAllAvailable)
-              .slice(0, 5)
+              .filter(slot => slot.availableCount > 0)
+              .slice(0, 10)
               .map((slot, index) => {
                 const isSelected = approvedTimeSlot?.date === slot.date && approvedTimeSlot?.time === slot.time;
+                const matchingSlot = slots.find(s => s.date === slot.date && s.time === slot.time);
+                const availableUserIds = matchingSlot?.availableUsers || [];
+                const availableNames = availableUserIds.map(uid => {
+                  const member = members.find(m => m.id === uid);
+                  return member?.name || uid.slice(0, 6);
+                });
+                const missingMembers = members.filter(m => !availableUserIds.includes(m.id));
+                
                 return (
                   <button
                     key={`${slot.date}-${slot.time}-${index}`}
@@ -697,31 +729,73 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
                     className={`w-full text-left p-3 rounded-xl border-2 transition-all ${
                       isSelected
                         ? 'bg-indigo-600 border-indigo-600 text-white'
-                        : 'bg-white border-indigo-200 hover:border-indigo-400'
+                        : slot.isAllAvailable
+                          ? 'bg-white border-emerald-300 hover:border-emerald-500'
+                          : 'bg-white border-indigo-200 hover:border-indigo-400'
                     }`}
                   >
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <div className={`font-bold ${isSelected ? 'text-white' : 'text-indigo-900'}`}>
-                          {formatDateShort(slot.date)} at {slot.time}
-                        </div>
-                        <div className={`text-[10px] ${isSelected ? 'text-indigo-100' : 'text-indigo-600'}`}>
-                          ✓ All {slot.totalMembers} members available
-                        </div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <div className={`font-bold text-sm ${isSelected ? 'text-white' : 'text-gray-900'}`}>
+                        {formatDateShort(slot.date)} at {slot.time}
                       </div>
-                      {isSelected && (
-                        <div className="bg-white/20 rounded-full px-2 py-1 text-[10px] font-bold uppercase">
-                          Selected
-                        </div>
-                      )}
+                      <div className="flex items-center gap-1">
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                          isSelected
+                            ? 'bg-white/20 text-white'
+                            : slot.isAllAvailable
+                              ? 'bg-emerald-100 text-emerald-700'
+                              : 'bg-amber-100 text-amber-700'
+                        }`}>
+                          {slot.availableCount}/{slot.totalMembers}
+                        </span>
+                        {isSelected && (
+                          <span className="bg-white/20 rounded-full px-2 py-0.5 text-[9px] font-bold uppercase">
+                            Selected
+                          </span>
+                        )}
+                      </div>
                     </div>
+                    
+                    {/* Available members */}
+                    <div className="flex flex-wrap gap-1 mb-1">
+                      {availableNames.map((name, i) => (
+                        <span
+                          key={i}
+                          className={`text-[9px] px-1.5 py-0.5 rounded-full ${
+                            isSelected
+                              ? 'bg-white/20 text-white'
+                              : 'bg-emerald-100 text-emerald-700'
+                          }`}
+                        >
+                          ✓ {name.split(' ')[0]}
+                        </span>
+                      ))}
+                    </div>
+                    
+                    {/* Missing members */}
+                    {missingMembers.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {missingMembers.map(m => (
+                          <span
+                            key={m.id}
+                            className={`text-[9px] px-1.5 py-0.5 rounded-full ${
+                              isSelected
+                                ? 'bg-white/10 text-indigo-200'
+                                : 'bg-rose-50 text-rose-500'
+                            }`}
+                          >
+                            ✗ {m.name.split(' ')[0]}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </button>
                 );
               })}
             
-            {proposedTimeSlots.filter(slot => slot.isAllAvailable).length === 0 && (
+            {proposedTimeSlots.filter(slot => slot.availableCount > 0).length === 0 && (
               <div className="text-center py-4 text-gray-500 text-xs">
-                No time slots where all members are available. Try analyzing again after more members vote.
+                No availability data yet. Wait for members to fill in their times.
               </div>
             )}
           </div>
