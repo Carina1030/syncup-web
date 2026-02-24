@@ -260,14 +260,16 @@ export async function getPendingFriendRequests(userEmail: string): Promise<Frien
     const requestsCollection = collection(db, "friendRequests");
     const q = query(
       requestsCollection, 
-      where("toUserEmail", "==", userEmail.toLowerCase()),
-      where("status", "==", "pending")
+      where("toUserEmail", "==", userEmail.toLowerCase())
     );
     const querySnapshot = await getDocs(q);
     
     const requests: FriendRequest[] = [];
     querySnapshot.forEach((doc) => {
-      requests.push(doc.data() as FriendRequest);
+      const data = doc.data() as FriendRequest;
+      if (data.status === 'pending') {
+        requests.push(data);
+      }
     });
     return requests;
   } catch (error) {
@@ -379,14 +381,16 @@ export async function getPendingEventInvitations(userId: string): Promise<EventI
     const invitesCollection = collection(db, "eventInvitations");
     const q = query(
       invitesCollection, 
-      where("toUserId", "==", userId),
-      where("status", "==", "pending")
+      where("toUserId", "==", userId)
     );
     const querySnapshot = await getDocs(q);
     
     const invitations: EventInvitation[] = [];
     querySnapshot.forEach((doc) => {
-      invitations.push(doc.data() as EventInvitation);
+      const data = doc.data() as EventInvitation;
+      if (data.status === 'pending') {
+        invitations.push(data);
+      }
     });
     return invitations;
   } catch (error) {
@@ -411,55 +415,77 @@ export async function updateEventInvitationStatus(
 }
 
 // Subscribe to user's event invitations (real-time)
+// Falls back to single-field query if composite index is missing
 export function subscribeToEventInvitations(
   userId: string,
   callback: (invitations: EventInvitation[]) => void
 ): () => void {
-  const invitesCollection = collection(db, "eventInvitations");
-  const q = query(
-    invitesCollection, 
-    where("toUserId", "==", userId),
-    where("status", "==", "pending")
-  );
-  
-  const unsubscribe = onSnapshot(q, (snapshot) => {
-    const invitations: EventInvitation[] = [];
-    snapshot.forEach((doc) => {
-      invitations.push(doc.data() as EventInvitation);
+  try {
+    const invitesCollection = collection(db, "eventInvitations");
+    // Use single where clause to avoid requiring composite index
+    const q = query(
+      invitesCollection, 
+      where("toUserId", "==", userId)
+    );
+    
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const invitations: EventInvitation[] = [];
+      snapshot.forEach((doc) => {
+        const data = doc.data() as EventInvitation;
+        // Filter pending status client-side
+        if (data.status === 'pending') {
+          invitations.push(data);
+        }
+      });
+      callback(invitations);
+    }, (error) => {
+      console.error("Error subscribing to invitations:", error);
+      callback([]);
     });
-    callback(invitations);
-  }, (error) => {
-    console.error("Error subscribing to invitations:", error);
+    
+    return unsubscribe;
+  } catch (error) {
+    console.error("Error setting up invitation subscription:", error);
     callback([]);
-  });
-  
-  return unsubscribe;
+    return () => {};
+  }
 }
 
 // Subscribe to friend requests (real-time)
+// Falls back to single-field query if composite index is missing
 export function subscribeToFriendRequests(
   userEmail: string,
   callback: (requests: FriendRequest[]) => void
 ): () => void {
-  const requestsCollection = collection(db, "friendRequests");
-  const q = query(
-    requestsCollection, 
-    where("toUserEmail", "==", userEmail.toLowerCase()),
-    where("status", "==", "pending")
-  );
-  
-  const unsubscribe = onSnapshot(q, (snapshot) => {
-    const requests: FriendRequest[] = [];
-    snapshot.forEach((doc) => {
-      requests.push(doc.data() as FriendRequest);
+  try {
+    const requestsCollection = collection(db, "friendRequests");
+    // Use single where clause to avoid requiring composite index
+    const q = query(
+      requestsCollection, 
+      where("toUserEmail", "==", userEmail.toLowerCase())
+    );
+    
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const requests: FriendRequest[] = [];
+      snapshot.forEach((doc) => {
+        const data = doc.data() as FriendRequest;
+        // Filter pending status client-side
+        if (data.status === 'pending') {
+          requests.push(data);
+        }
+      });
+      callback(requests);
+    }, (error) => {
+      console.error("Error subscribing to friend requests:", error);
+      callback([]);
     });
-    callback(requests);
-  }, (error) => {
-    console.error("Error subscribing to friend requests:", error);
+    
+    return unsubscribe;
+  } catch (error) {
+    console.error("Error setting up friend request subscription:", error);
     callback([]);
-  });
-  
-  return unsubscribe;
+    return () => {};
+  }
 }
 
 export { db, auth };

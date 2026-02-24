@@ -10,6 +10,9 @@ export default defineConfig(({ mode }) => {
         port: 3000,
         host: '0.0.0.0',
       },
+      build: {
+        target: 'es2020',
+      },
       plugins: [
         tailwindcss(),
         react()

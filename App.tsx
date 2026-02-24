@@ -176,7 +176,7 @@ const App: React.FC = () => {
 
   // Subscribe to Firebase Auth state changes
   useEffect(() => {
-    const unsubscribe = subscribeToAuthState(async (firebaseUser) => {
+    const unsubscribe = subscribeToAuthState((firebaseUser) => {
       if (firebaseUser) {
         // User is signed in with Google
         const user: User = {
@@ -190,23 +190,28 @@ const App: React.FC = () => {
         setIsLoggedIn(true);
         saveToStorage(STORAGE_KEYS.USER, user);
         
-        // Save/update user profile in Firebase
+        // Save/update user profile in Firebase (fire-and-forget with error handling)
         if (firebaseUser.email) {
-          const profile: UserProfile = {
-            id: firebaseUser.uid,
-            name: user.name,
-            email: firebaseUser.email.toLowerCase(),
-            photoURL: firebaseUser.photoURL || undefined,
-            friends: [],
-            createdAt: Date.now()
-          };
-          // Get existing profile to preserve friends list
-          const existingProfile = await getUserProfile(firebaseUser.uid);
-          if (existingProfile) {
-            profile.friends = existingProfile.friends || [];
-            profile.createdAt = existingProfile.createdAt;
-          }
-          await saveUserProfile(profile);
+          (async () => {
+            try {
+              const profile: UserProfile = {
+                id: firebaseUser.uid,
+                name: user.name,
+                email: firebaseUser.email!.toLowerCase(),
+                photoURL: firebaseUser.photoURL || undefined,
+                friends: [],
+                createdAt: Date.now()
+              };
+              const existingProfile = await getUserProfile(firebaseUser.uid);
+              if (existingProfile) {
+                profile.friends = existingProfile.friends || [];
+                profile.createdAt = existingProfile.createdAt;
+              }
+              await saveUserProfile(profile);
+            } catch (error) {
+              console.error('Failed to save user profile:', error);
+            }
+          })();
         }
       }
       // Note: We don't auto-logout here to allow manual name login to persist
@@ -217,28 +222,45 @@ const App: React.FC = () => {
 
   // Load friends and subscribe to invitations when user logs in
   useEffect(() => {
-    if (!currentUser?.id || !currentUser?.email) return;
+    if (!currentUser?.id) return;
     
     // Load friends list
     const loadFriends = async () => {
-      const friendsList = await getUserFriends(currentUser.id);
-      setFriends(friendsList);
+      try {
+        const friendsList = await getUserFriends(currentUser.id);
+        setFriends(friendsList);
+      } catch (error) {
+        console.error('Failed to load friends:', error);
+      }
     };
     loadFriends();
     
-    // Subscribe to friend requests
-    const unsubFriendReqs = subscribeToFriendRequests(currentUser.email, (requests) => {
-      setFriendRequests(requests);
-    });
+    // Only subscribe to real-time updates if user has email (Google account)
+    // These queries need Firestore composite indexes
+    const cleanups: Array<() => void> = [];
     
-    // Subscribe to event invitations
-    const unsubEventInvites = subscribeToEventInvitations(currentUser.id, (invites) => {
-      setEventInvitations(invites);
-    });
+    if (currentUser.email) {
+      try {
+        const unsubFriendReqs = subscribeToFriendRequests(currentUser.email, (requests) => {
+          setFriendRequests(requests);
+        });
+        cleanups.push(unsubFriendReqs);
+      } catch (error) {
+        console.error('Failed to subscribe to friend requests:', error);
+      }
+    }
+    
+    try {
+      const unsubEventInvites = subscribeToEventInvitations(currentUser.id, (invites) => {
+        setEventInvitations(invites);
+      });
+      cleanups.push(unsubEventInvites);
+    } catch (error) {
+      console.error('Failed to subscribe to event invitations:', error);
+    }
     
     return () => {
-      unsubFriendReqs();
-      unsubEventInvites();
+      cleanups.forEach(fn => fn());
     };
   }, [currentUser?.id, currentUser?.email]);
 
