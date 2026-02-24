@@ -1,7 +1,7 @@
 import React, { useState, useRef, useCallback, useMemo } from 'react';
 import { ALL_TIME_SLOTS, Icons } from '../constants';
 import { AvailabilitySlot, User, CalendarEvent, DateRange, ProposedTimeSlot, TimeRange } from '../types';
-import { getDatesInRange, formatDateShort, getDayOfWeek, isToday } from '../utils/dateUtils';
+import { getDatesInRange, formatDateShort, getDayOfWeek, isToday, parseDate } from '../utils/dateUtils';
 
 interface AvailabilityGridProps {
   slots: AvailabilitySlot[];
@@ -65,6 +65,7 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
   const [draggedIndices, setDraggedIndices] = useState<Set<number>>(new Set());
   const dragStartIndex = useRef<number | null>(null);
   const gridRef = useRef<HTMLDivElement>(null);
+  const [showCopyMenu, setShowCopyMenu] = useState(false);
 
   const dates = getDatesInRange(dateRange.startDate, dateRange.endDate);
 
@@ -268,11 +269,83 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
     }
   };
 
+  // Get current day's availability as a template
+  const getCurrentDayAvailability = useCallback((): string[] => {
+    return TIME_SLOTS.filter(time => {
+      const slot = slots.find(s => s.date === selectedDate && s.time === time);
+      return slot?.availableUsers.includes(currentUser.id);
+    }) as string[];
+  }, [slots, selectedDate, currentUser.id, TIME_SLOTS]);
+
+  // Copy current day's availability to target dates
+  const copyToTargetDates = useCallback((targetDates: string[]) => {
+    if (!onBatchToggle) return;
+    
+    const myAvailableTimes = getCurrentDayAvailability();
+    const updates: Array<{ date: string; time: string; isAvailable: boolean }> = [];
+    
+    for (const targetDate of targetDates) {
+      if (targetDate === selectedDate) continue;
+      
+      for (const time of TIME_SLOTS) {
+        const shouldBeAvailable = myAvailableTimes.includes(time as string);
+        const slot = slots.find(s => s.date === targetDate && s.time === time);
+        const isCurrentlyAvailable = slot?.availableUsers.includes(currentUser.id) || false;
+        
+        if (shouldBeAvailable !== isCurrentlyAvailable) {
+          updates.push({ date: targetDate, time: time as string, isAvailable: shouldBeAvailable });
+        }
+      }
+    }
+    
+    if (updates.length > 0) {
+      onBatchToggle(updates);
+    }
+    setShowCopyMenu(false);
+  }, [onBatchToggle, getCurrentDayAvailability, selectedDate, TIME_SLOTS, slots, currentUser.id]);
+
+  // Copy to all same weekday (e.g., all Mondays)
+  const handleCopyToSameWeekday = useCallback(() => {
+    const selectedDay = parseDate(selectedDate).getDay();
+    const targetDates = dates.filter(d => parseDate(d).getDay() === selectedDay);
+    copyToTargetDates(targetDates);
+  }, [selectedDate, dates, copyToTargetDates]);
+
+  // Copy to all days
+  const handleCopyToAllDays = useCallback(() => {
+    copyToTargetDates(dates);
+  }, [dates, copyToTargetDates]);
+
+  // Copy to weekdays only (Mon-Fri)
+  const handleCopyToWeekdays = useCallback(() => {
+    const targetDates = dates.filter(d => {
+      const day = parseDate(d).getDay();
+      return day >= 1 && day <= 5;
+    });
+    copyToTargetDates(targetDates);
+  }, [dates, copyToTargetDates]);
+
+  // Copy to weekends only (Sat-Sun)
+  const handleCopyToWeekends = useCallback(() => {
+    const targetDates = dates.filter(d => {
+      const day = parseDate(d).getDay();
+      return day === 0 || day === 6;
+    });
+    copyToTargetDates(targetDates);
+  }, [dates, copyToTargetDates]);
+
   // Count selected slots for current date
   const selectedCount = TIME_SLOTS.filter(time => {
     const slot = slots.find(s => s.date === selectedDate && s.time === time);
     return slot?.availableUsers.includes(currentUser.id);
   }).length;
+
+  const selectedDayName = getDayOfWeek(selectedDate);
+  const fullDayNames: Record<string, string> = {
+    'Sun': 'Sunday', 'Mon': 'Monday', 'Tue': 'Tuesday', 'Wed': 'Wednesday',
+    'Thu': 'Thursday', 'Fri': 'Friday', 'Sat': 'Saturday'
+  };
+  const sameWeekdayCount = dates.filter(d => getDayOfWeek(d) === selectedDayName && d !== selectedDate).length;
 
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
@@ -362,16 +435,19 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
           {dates.map(date => {
             const isSelected = date === selectedDate;
             const daySlots = getSlotsForDate(date);
-            const totalAvailable = daySlots.reduce((sum, s) => sum + s.availableUsers.length, 0);
+            const myFilledCount = daySlots.filter(s => s.availableUsers.includes(currentUser.id)).length;
+            const hasFilled = myFilledCount > 0;
             
             return (
               <button
                 key={date}
                 onClick={() => setSelectedDate(date)}
-                className={`px-3 py-2 rounded-lg text-xs font-bold transition-all whitespace-nowrap ${
+                className={`px-3 py-2 rounded-lg text-xs font-bold transition-all whitespace-nowrap relative ${
                   isSelected
                     ? 'bg-indigo-600 text-white'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    : hasFilled
+                      ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                 }`}
               >
                 <div className="text-center">
@@ -381,6 +457,9 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
                     <div className="text-[8px] mt-0.5 opacity-80">Today</div>
                   )}
                 </div>
+                {hasFilled && !isSelected && (
+                  <div className="absolute -top-1 -right-1 w-2 h-2 bg-emerald-500 rounded-full"></div>
+                )}
               </button>
             );
           })}
@@ -389,24 +468,93 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
 
       {/* Quick Actions */}
       {!isLocked && (
-        <div className="px-4 py-2 border-b border-gray-100 flex items-center justify-between">
-          <div className="text-[10px] text-gray-500">
-            <span className="font-bold text-gray-700">{selectedCount}</span> / {TIME_SLOTS.length} selected
+        <div className="px-4 py-2 border-b border-gray-100">
+          <div className="flex items-center justify-between">
+            <div className="text-[10px] text-gray-500">
+              <span className="font-bold text-gray-700">{selectedCount}</span> / {TIME_SLOTS.length} selected
+            </div>
+            <div className="flex items-center space-x-2">
+              <button
+                onClick={handleSelectAll}
+                className="px-3 py-1 text-[10px] font-bold text-emerald-600 bg-emerald-50 hover:bg-emerald-100 rounded-full transition-colors"
+              >
+                Select All
+              </button>
+              <button
+                onClick={handleClearAll}
+                className="px-3 py-1 text-[10px] font-bold text-gray-500 bg-gray-100 hover:bg-gray-200 rounded-full transition-colors"
+              >
+                Clear All
+              </button>
+            </div>
           </div>
-          <div className="flex items-center space-x-2">
-            <button
-              onClick={handleSelectAll}
-              className="px-3 py-1 text-[10px] font-bold text-emerald-600 bg-emerald-50 hover:bg-emerald-100 rounded-full transition-colors"
-            >
-              Select All
-            </button>
-            <button
-              onClick={handleClearAll}
-              className="px-3 py-1 text-[10px] font-bold text-gray-500 bg-gray-100 hover:bg-gray-200 rounded-full transition-colors"
-            >
-              Clear All
-            </button>
-          </div>
+
+          {/* Copy to other days */}
+          {selectedCount > 0 && dates.length > 1 && onBatchToggle && (
+            <div className="relative mt-2">
+              <button
+                onClick={() => setShowCopyMenu(!showCopyMenu)}
+                className="w-full py-2 px-3 text-[11px] font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-xl transition-colors flex items-center justify-center gap-1"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                </svg>
+                Apply {selectedDayName}'s schedule to other days...
+                <span className="text-[9px]">{showCopyMenu ? '▲' : '▼'}</span>
+              </button>
+
+              {showCopyMenu && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setShowCopyMenu(false)} />
+                  <div className="absolute left-0 right-0 top-full mt-1 bg-white rounded-xl shadow-lg border border-gray-100 py-1 z-50">
+                    {sameWeekdayCount > 0 && (
+                      <button
+                        onClick={handleCopyToSameWeekday}
+                        className="w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-indigo-50 flex items-center gap-2"
+                      >
+                        <span className="text-base">📅</span>
+                        <div>
+                          <div className="font-medium">All {fullDayNames[selectedDayName]}s</div>
+                          <div className="text-[10px] text-gray-400">{sameWeekdayCount} other {fullDayNames[selectedDayName]}{sameWeekdayCount > 1 ? 's' : ''}</div>
+                        </div>
+                      </button>
+                    )}
+                    <button
+                      onClick={handleCopyToWeekdays}
+                      className="w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-indigo-50 flex items-center gap-2"
+                    >
+                      <span className="text-base">💼</span>
+                      <div>
+                        <div className="font-medium">All weekdays</div>
+                        <div className="text-[10px] text-gray-400">Monday - Friday</div>
+                      </div>
+                    </button>
+                    <button
+                      onClick={handleCopyToWeekends}
+                      className="w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-indigo-50 flex items-center gap-2"
+                    >
+                      <span className="text-base">🌴</span>
+                      <div>
+                        <div className="font-medium">All weekends</div>
+                        <div className="text-[10px] text-gray-400">Saturday - Sunday</div>
+                      </div>
+                    </button>
+                    <div className="h-px bg-gray-100 my-1"></div>
+                    <button
+                      onClick={handleCopyToAllDays}
+                      className="w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-indigo-50 flex items-center gap-2"
+                    >
+                      <span className="text-base">📋</span>
+                      <div>
+                        <div className="font-medium">Every single day</div>
+                        <div className="text-[10px] text-gray-400">Apply to all {dates.length - 1} other days</div>
+                      </div>
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -517,7 +665,7 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
 
       {!isLocked && (
         <div className="p-4 bg-gray-50 text-[10px] text-center text-gray-500 italic">
-          Tip: Drag across time slots to select multiple at once. Use "Select All" for a full day.
+          Tip: Fill one day, then use "Apply schedule to other days" to copy it in bulk.
         </div>
       )}
 
