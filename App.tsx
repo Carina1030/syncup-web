@@ -61,6 +61,7 @@ const App: React.FC = () => {
   const [showFriendsModal, setShowFriendsModal] = useState(false);
   const [showAddFriendModal, setShowAddFriendModal] = useState(false);
   const [showInviteFriendsModal, setShowInviteFriendsModal] = useState(false);
+  const [showEditEvent, setShowEditEvent] = useState(false);
   
   // Friends and invitations
   const [friends, setFriends] = useState<UserProfile[]>([]);
@@ -266,7 +267,7 @@ const App: React.FC = () => {
     try {
       const unsubEventInvites = subscribeToEventInvitations(currentUser.id, (invites) => {
         setEventInvitations(invites);
-      });
+      }, currentUser.email);
       cleanups.push(unsubEventInvites);
     } catch (error) {
       console.error('Failed to subscribe to event invitations:', error);
@@ -704,14 +705,133 @@ const App: React.FC = () => {
     }
   };
 
+  // Edit event details
+  const handleEditEvent = (updates: { title?: string; description?: string; startDate?: string; endDate?: string; startTime?: string; endTime?: string }) => {
+    if (!event) return;
+    
+    const newDateRange = (updates.startDate || updates.endDate) ? {
+      startDate: updates.startDate || event.dateRange.startDate,
+      endDate: updates.endDate || event.dateRange.endDate
+    } : undefined;
+    
+    const newTimeRange = (updates.startTime || updates.endTime) ? {
+      startTime: updates.startTime || event.timeRange.startTime,
+      endTime: updates.endTime || event.timeRange.endTime
+    } : undefined;
+    
+    // If date range changed, we need to add slots for new dates
+    let newSlots = [...event.slots];
+    if (newDateRange) {
+      const newDates = getDatesInRange(newDateRange.startDate, newDateRange.endDate);
+      const timeSlots = newTimeRange 
+        ? ALL_TIME_SLOTS.slice(
+            ALL_TIME_SLOTS.indexOf(newTimeRange.startTime as typeof ALL_TIME_SLOTS[number]),
+            ALL_TIME_SLOTS.indexOf(newTimeRange.endTime as typeof ALL_TIME_SLOTS[number]) + 1
+          )
+        : ALL_TIME_SLOTS.slice(
+            ALL_TIME_SLOTS.indexOf(event.timeRange.startTime as typeof ALL_TIME_SLOTS[number]),
+            ALL_TIME_SLOTS.indexOf(event.timeRange.endTime as typeof ALL_TIME_SLOTS[number]) + 1
+          );
+      
+      // Add missing slots for new dates
+      for (const date of newDates) {
+        for (const time of timeSlots) {
+          const exists = newSlots.some(s => s.date === date && s.time === time);
+          if (!exists) {
+            newSlots.push({ date, time, availableUsers: [] });
+          }
+        }
+      }
+      
+      // Remove slots for dates no longer in range
+      newSlots = newSlots.filter(s => newDates.includes(s.date));
+    }
+    
+    updateCurrentEvent(prev => ({
+      ...prev,
+      ...(updates.title !== undefined && { title: updates.title }),
+      ...(updates.description !== undefined && { description: updates.description }),
+      ...(newDateRange && { dateRange: newDateRange }),
+      ...(newTimeRange && { timeRange: newTimeRange }),
+      slots: newSlots
+    }));
+    
+    setShowEditEvent(false);
+  };
+
   // Switch to event
   const handleSwitchEvent = (eventId: string) => {
     setCurrentEventId(eventId);
     setShowEventList(false);
   };
 
-  // Add member
-  const handleAddMember = (memberData: { name: string; role: 'Director' | 'Co-manager' | 'Member'; badge?: string }) => {
+  // Add member by email (send invitation)
+  const handleAddMember = async (memberData: { email: string }) => {
+    if (!event || !currentUser) return;
+    
+    const normalizedEmail = memberData.email.toLowerCase().trim();
+    
+    // Check if already a member by email
+    const alreadyMember = event.members.some(m => m.email?.toLowerCase() === normalizedEmail);
+    if (alreadyMember) {
+      alert('This person is already a member of this event.');
+      setShowMemberForm(false);
+      return;
+    }
+    
+    // Find user by email to get their userId
+    const { findUserByEmail } = await import('./services/firebase');
+    const targetUser = await findUserByEmail(normalizedEmail);
+    
+    if (targetUser) {
+      // User exists - send event invitation
+      const invitation: EventInvitation = {
+        id: Math.random().toString(36).substr(2, 9),
+        eventId: event.id,
+        eventTitle: event.title,
+        fromUserId: currentUser.id,
+        fromUserName: currentUser.name,
+        toUserId: targetUser.id,
+        toUserEmail: normalizedEmail,
+        status: 'pending',
+        createdAt: Date.now()
+      };
+      
+      try {
+        await sendEventInvitation(invitation);
+        alert(`Invitation sent to ${targetUser.name} (${normalizedEmail})!`);
+      } catch (error) {
+        console.error('Failed to send invitation:', error);
+        alert('Failed to send invitation. Please try again.');
+      }
+    } else {
+      // User not found in system - still send invitation (they'll see it when they sign up)
+      const invitation: EventInvitation = {
+        id: Math.random().toString(36).substr(2, 9),
+        eventId: event.id,
+        eventTitle: event.title,
+        fromUserId: currentUser.id,
+        fromUserName: currentUser.name,
+        toUserId: '',
+        toUserEmail: normalizedEmail,
+        status: 'pending',
+        createdAt: Date.now()
+      };
+      
+      try {
+        await sendEventInvitation(invitation);
+        alert(`Invitation sent to ${normalizedEmail}. They'll see it when they sign up with this email.`);
+      } catch (error) {
+        console.error('Failed to send invitation:', error);
+        alert('Failed to send invitation. Please try again.');
+      }
+    }
+    
+    setShowMemberForm(false);
+  };
+
+  // Legacy: kept for compatibility but no longer used for direct add
+  const _handleAddMemberLegacy = (memberData: { name: string; role: 'Director' | 'Co-manager' | 'Member'; badge?: string }) => {
     if (!event) return;
     const newMember: User = {
       id: Math.random().toString(36).substr(2, 9),
@@ -1785,6 +1905,17 @@ const App: React.FC = () => {
                    {canEdit && (
                      <button
                        onClick={() => {
+                         setShowEditEvent(true);
+                         setShowEventMenu(false);
+                       }}
+                       className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                     >
+                       ✏️ Edit Event
+                     </button>
+                   )}
+                   {canEdit && (
+                     <button
+                       onClick={() => {
                          setShowMemberManager(true);
                          setShowEventMenu(false);
                        }}
@@ -2159,6 +2290,15 @@ const App: React.FC = () => {
         />
       )}
 
+      {/* Edit Event Modal */}
+      {showEditEvent && event && (
+        <EditEventModal
+          event={event}
+          onClose={() => setShowEditEvent(false)}
+          onSave={handleEditEvent}
+        />
+      )}
+
       {/* Navigation - Sticky Bottom */}
       <nav className="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-white/80 backdrop-blur-md border-t border-gray-100 p-4 pb-8 z-40">
         <div className="flex justify-around items-center bg-gray-900 rounded-3xl p-2 shadow-2xl">
@@ -2330,74 +2470,38 @@ const EventCreationForm: React.FC<{
   );
 };
 
-// Member Form Modal Component
+// Member Invite Modal Component (invite by email)
 const MemberFormModal: React.FC<{
   onClose: () => void;
-  onSubmit: (data: { name: string; role: 'Director' | 'Co-manager' | 'Member'; badge?: string }) => void;
+  onSubmit: (data: { email: string }) => void;
 }> = ({ onClose, onSubmit }) => {
-  const [name, setName] = useState('');
-  const [role, setRole] = useState<'Director' | 'Co-manager' | 'Member'>('Member');
-  const [badge, setBadge] = useState('');
+  const [email, setEmail] = useState('');
 
   const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!name.trim()) return;
-    onSubmit({ name, role, badge: badge || undefined });
+    if (!email.trim()) return;
+    onSubmit({ email: email.trim() });
   };
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl p-6 max-w-md w-full max-h-[90vh] overflow-y-auto">
-        <h3 className="font-bold text-gray-900 mb-4">Add Member</h3>
+      <div className="bg-white rounded-2xl p-6 max-w-md w-full">
+        <h3 className="font-bold text-gray-900 mb-2">Invite Member</h3>
+        <p className="text-sm text-gray-500 mb-4">
+          Enter their email address. They'll get an invitation and can join after logging in.
+        </p>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Name</label>
+            <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Email Address</label>
             <input
-              type="text"
-              value={name}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)}
-              placeholder="Member name"
-              className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
+              type="email"
+              value={email}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEmail(e.target.value)}
+              placeholder="member@gmail.com"
+              className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
               required
+              autoFocus
             />
-          </div>
-          <div>
-            <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Role (Badge)</label>
-            <div className="flex flex-wrap gap-2 mb-2">
-              {MEMBER_BADGES.map(b => (
-                <button
-                  key={b.label}
-                  type="button"
-                  onClick={() => setBadge(`${b.emoji} ${b.label}`)}
-                  className={`px-2 py-1 rounded-lg text-xs transition-colors ${
-                    badge === `${b.emoji} ${b.label}`
-                      ? 'bg-indigo-100 text-indigo-700 ring-2 ring-indigo-300'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                  }`}
-                >
-                  {b.emoji} {b.label}
-                </button>
-              ))}
-            </div>
-            <input
-              type="text"
-              value={badge}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setBadge(e.target.value)}
-              placeholder="Or enter custom (e.g., 🎵 DJ)"
-              className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none text-sm"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Permission Level</label>
-            <select
-              value={role}
-              onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setRole(e.target.value as 'Director' | 'Co-manager' | 'Member')}
-              className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
-            >
-              <option value="Member">Member (can vote)</option>
-              <option value="Co-manager">Co-manager (can edit)</option>
-              <option value="Director">Director (full control)</option>
-            </select>
           </div>
           <div className="flex gap-2">
             <button
@@ -2409,9 +2513,9 @@ const MemberFormModal: React.FC<{
             </button>
             <button
               type="submit"
-              className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-colors"
+              className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-colors font-bold"
             >
-              Add
+              Send Invite
             </button>
           </div>
         </form>
@@ -2596,7 +2700,7 @@ const MemberManagerModal: React.FC<{
               onClick={onAddMember}
               className="w-full py-2 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700"
             >
-              + Add Member
+              + Invite Member by Email
             </button>
           </>
         )}
@@ -3222,6 +3326,144 @@ const InviteFriendsModal: React.FC<{
         >
           Done
         </button>
+      </div>
+    </div>
+  );
+};
+
+// Edit Event Modal Component
+const EditEventModal: React.FC<{
+  event: EventData;
+  onClose: () => void;
+  onSave: (updates: { title?: string; description?: string; startDate?: string; endDate?: string; startTime?: string; endTime?: string }) => void;
+}> = ({ event, onClose, onSave }) => {
+  const [title, setTitle] = useState(event.title);
+  const [description, setDescription] = useState(event.description);
+  const [startDate, setStartDate] = useState(event.dateRange.startDate);
+  const [endDate, setEndDate] = useState(event.dateRange.endDate);
+  const [startTime, setStartTime] = useState(event.timeRange.startTime);
+  const [endTime, setEndTime] = useState(event.timeRange.endTime);
+  
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!title.trim()) return;
+    if (new Date(endDate) < new Date(startDate)) {
+      alert('End date cannot be before start date.');
+      return;
+    }
+    
+    onSave({
+      title: title.trim(),
+      description: description.trim(),
+      startDate,
+      endDate,
+      startTime,
+      endTime
+    });
+  };
+  
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl p-6 max-w-md w-full max-h-[90vh] overflow-y-auto">
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="font-bold text-gray-900 text-lg">Edit Event</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">✕</button>
+        </div>
+        
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Event Title</label>
+            <input
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
+              required
+            />
+          </div>
+          
+          <div>
+            <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Description</label>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none resize-none"
+              rows={2}
+              placeholder="What's this event about?"
+            />
+          </div>
+          
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Start Date</label>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className="w-full px-3 py-2.5 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none text-sm"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase mb-1">End Date</label>
+              <input
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                min={startDate}
+                className="w-full px-3 py-2.5 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none text-sm"
+                required
+              />
+            </div>
+          </div>
+          
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Start Time</label>
+              <select
+                value={startTime}
+                onChange={(e) => setStartTime(e.target.value)}
+                className="w-full px-3 py-2.5 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none text-sm"
+              >
+                {ALL_TIME_SLOTS.map(t => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase mb-1">End Time</label>
+              <select
+                value={endTime}
+                onChange={(e) => setEndTime(e.target.value)}
+                className="w-full px-3 py-2.5 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none text-sm"
+              >
+                {ALL_TIME_SLOTS.map(t => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          
+          <p className="text-xs text-amber-600 bg-amber-50 p-3 rounded-xl">
+            Note: Changing dates will keep existing availability data for overlapping dates. New dates will start empty.
+          </p>
+          
+          <div className="flex gap-2 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 px-4 py-2.5 border border-gray-200 rounded-xl text-gray-700 hover:bg-gray-50 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="flex-1 px-4 py-2.5 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-colors font-bold"
+            >
+              Save Changes
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );

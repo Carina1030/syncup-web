@@ -415,35 +415,59 @@ export async function updateEventInvitationStatus(
 }
 
 // Subscribe to user's event invitations (real-time)
-// Falls back to single-field query if composite index is missing
+// Checks both by userId and by email (for invites sent before user signed up)
 export function subscribeToEventInvitations(
   userId: string,
-  callback: (invitations: EventInvitation[]) => void
+  callback: (invitations: EventInvitation[]) => void,
+  userEmail?: string
 ): () => void {
   try {
     const invitesCollection = collection(db, "eventInvitations");
-    // Use single where clause to avoid requiring composite index
-    const q = query(
-      invitesCollection, 
-      where("toUserId", "==", userId)
-    );
+    const cleanups: Array<() => void> = [];
+    let invitationsByUserId: EventInvitation[] = [];
+    let invitationsByEmail: EventInvitation[] = [];
     
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const invitations: EventInvitation[] = [];
-      snapshot.forEach((doc) => {
-        const data = doc.data() as EventInvitation;
-        // Filter pending status client-side
-        if (data.status === 'pending') {
-          invitations.push(data);
+    const mergeAndCallback = () => {
+      const seen = new Set<string>();
+      const merged: EventInvitation[] = [];
+      for (const inv of [...invitationsByUserId, ...invitationsByEmail]) {
+        if (!seen.has(inv.id) && inv.status === 'pending') {
+          seen.add(inv.id);
+          merged.push(inv);
         }
-      });
-      callback(invitations);
-    }, (error) => {
-      console.error("Error subscribing to invitations:", error);
-      callback([]);
-    });
+      }
+      callback(merged);
+    };
     
-    return unsubscribe;
+    // Query by userId
+    const q1 = query(invitesCollection, where("toUserId", "==", userId));
+    const unsub1 = onSnapshot(q1, (snapshot) => {
+      invitationsByUserId = [];
+      snapshot.forEach((doc) => {
+        invitationsByUserId.push(doc.data() as EventInvitation);
+      });
+      mergeAndCallback();
+    }, (error) => {
+      console.error("Error subscribing to invitations by userId:", error);
+    });
+    cleanups.push(unsub1);
+    
+    // Also query by email if available
+    if (userEmail) {
+      const q2 = query(invitesCollection, where("toUserEmail", "==", userEmail.toLowerCase()));
+      const unsub2 = onSnapshot(q2, (snapshot) => {
+        invitationsByEmail = [];
+        snapshot.forEach((doc) => {
+          invitationsByEmail.push(doc.data() as EventInvitation);
+        });
+        mergeAndCallback();
+      }, (error) => {
+        console.error("Error subscribing to invitations by email:", error);
+      });
+      cleanups.push(unsub2);
+    }
+    
+    return () => cleanups.forEach(fn => fn());
   } catch (error) {
     console.error("Error setting up invitation subscription:", error);
     callback([]);
