@@ -2,6 +2,7 @@ import React, { useState, useRef, useCallback, useMemo } from 'react';
 import { ALL_TIME_SLOTS, Icons } from '../constants';
 import { AvailabilitySlot, User, CalendarEvent, DateRange, ProposedTimeSlot, TimeRange } from '../types';
 import { getDatesInRange, formatDateShort, getDayOfWeek, isToday, parseDate } from '../utils/dateUtils';
+import { analyzeAvailabilityMerged, MergedTimeRange } from '../utils/availabilityAnalysis';
 
 interface AvailabilityGridProps {
   slots: AvailabilitySlot[];
@@ -60,7 +61,7 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
   });
 
   // Drag selection state - use refs for values needed immediately in handlers
-  const [isDragging, setIsDragging] = useState(false);
+  const [, setIsDragging] = useState(false);
   const [dragMode, setDragMode] = useState<'select' | 'deselect'>('select');
   const [draggedIndices, setDraggedIndices] = useState<Set<number>>(new Set());
   const dragStartIndex = useRef<number | null>(null);
@@ -108,20 +109,8 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
     return calendarEvents.find(e => e.startTime === time);
   };
 
-  const handleSlotClick = (date: string, time: string) => {
-    if (isLocked || isDragging) return;
-    const slot = slots.find(s => s.date === date && s.time === time);
-    const currentlyAvailable = slot?.availableUsers.includes(currentUser.id) || false;
-    onToggle(date, time, !currentlyAvailable);
-  };
-
   const getSlotsForDate = (date: string) => {
     return slots.filter(s => s.date === date);
-  };
-
-  // Get time slot index
-  const getTimeIndex = (time: string): number => {
-    return TIME_SLOTS.indexOf(time as typeof TIME_SLOTS[number]);
   };
 
   // Track if we actually dragged (moved to different slot)
@@ -713,123 +702,194 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
         </div>
       )}
 
-      {/* Director Analysis Panel */}
+      {/* Director Analysis Panel - Merged Time Ranges */}
       {canEdit && proposedTimeSlots && proposedTimeSlots.length > 0 && (
-        <div className="border-t border-gray-100 p-4 bg-indigo-50">
-          <div className="flex items-center justify-between mb-3">
-            <h4 className="font-bold text-indigo-900 text-sm">Best Available Times</h4>
-            {onAnalyze && (
-              <button
-                onClick={onAnalyze}
-                className="text-[10px] font-bold text-indigo-600 hover:text-indigo-700 uppercase tracking-wider"
-              >
-                Re-analyze
-              </button>
-            )}
-          </div>
-          
-          {/* Show top slots: all-available first, then partial (>50%) */}
-          <div className="space-y-2 max-h-[300px] overflow-y-auto">
-            {proposedTimeSlots
-              .filter(slot => slot.availableCount > 0)
-              .slice(0, 10)
-              .map((slot, index) => {
-                const isSelected = approvedTimeSlot?.date === slot.date && approvedTimeSlot?.time === slot.time;
-                const matchingSlot = slots.find(s => s.date === slot.date && s.time === slot.time);
-                const availableUserIds = matchingSlot?.availableUsers || [];
-                const availableNames = availableUserIds.map(uid => {
-                  const member = members.find(m => m.id === uid);
-                  return member?.name || uid.slice(0, 6);
-                });
-                const missingMembers = members.filter(m => !availableUserIds.includes(m.id));
-                
-                return (
-                  <button
-                    key={`${slot.date}-${slot.time}-${index}`}
-                    onClick={() => onSelectTimeSlot?.(slot)}
-                    className={`w-full text-left p-3 rounded-xl border-2 transition-all ${
-                      isSelected
-                        ? 'bg-indigo-600 border-indigo-600 text-white'
-                        : slot.isAllAvailable
-                          ? 'bg-white border-emerald-300 hover:border-emerald-500'
-                          : 'bg-white border-indigo-200 hover:border-indigo-400'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-1.5">
-                      <div className={`font-bold text-sm ${isSelected ? 'text-white' : 'text-gray-900'}`}>
-                        {formatDateShort(slot.date)} at {slot.time}
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                          isSelected
-                            ? 'bg-white/20 text-white'
-                            : slot.isAllAvailable
-                              ? 'bg-emerald-100 text-emerald-700'
-                              : 'bg-amber-100 text-amber-700'
-                        }`}>
-                          {slot.availableCount}/{slot.totalMembers}
-                        </span>
-                        {isSelected && (
-                          <span className="bg-white/20 rounded-full px-2 py-0.5 text-[9px] font-bold uppercase">
-                            Selected
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    
-                    {/* Available members */}
-                    <div className="flex flex-wrap gap-1 mb-1">
-                      {availableNames.map((name, i) => (
-                        <span
-                          key={i}
-                          className={`text-[9px] px-1.5 py-0.5 rounded-full ${
-                            isSelected
-                              ? 'bg-white/20 text-white'
-                              : 'bg-emerald-100 text-emerald-700'
-                          }`}
-                        >
-                          ✓ {name.split(' ')[0]}
-                        </span>
-                      ))}
-                    </div>
-                    
-                    {/* Missing members */}
-                    {missingMembers.length > 0 && (
-                      <div className="flex flex-wrap gap-1">
-                        {missingMembers.map(m => (
-                          <span
-                            key={m.id}
-                            className={`text-[9px] px-1.5 py-0.5 rounded-full ${
-                              isSelected
-                                ? 'bg-white/10 text-indigo-200'
-                                : 'bg-rose-50 text-rose-500'
-                            }`}
-                          >
-                            ✗ {m.name.split(' ')[0]}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </button>
-                );
-              })}
-            
-            {proposedTimeSlots.filter(slot => slot.availableCount > 0).length === 0 && (
-              <div className="text-center py-4 text-gray-500 text-xs">
-                No availability data yet. Wait for members to fill in their times.
-              </div>
-            )}
-          </div>
+        <MergedAnalysisPanel
+          slots={slots}
+          members={members}
+          onAnalyze={onAnalyze}
+          onSelectTimeSlot={onSelectTimeSlot}
+          approvedTimeSlot={approvedTimeSlot}
+          onSendForApproval={onSendForApproval}
+        />
+      )}
+    </div>
+  );
+};
 
-          {approvedTimeSlot && onSendForApproval && (
-            <button
-              onClick={onSendForApproval}
-              className="w-full mt-3 bg-indigo-600 text-white py-2 rounded-xl font-bold text-sm hover:bg-indigo-700 transition-colors"
-            >
-              Send to Chat for Approval
+// Merged Analysis Panel - shows consecutive time ranges grouped by availability
+const MergedAnalysisPanel: React.FC<{
+  slots: AvailabilitySlot[];
+  members: User[];
+  onAnalyze?: () => void;
+  onSelectTimeSlot?: (slot: ProposedTimeSlot) => void;
+  approvedTimeSlot?: ProposedTimeSlot;
+  onSendForApproval?: () => void;
+}> = ({ slots, members, onAnalyze, onSelectTimeSlot, approvedTimeSlot, onSendForApproval }) => {
+  const mergedRanges = useMemo(() => analyzeAvailabilityMerged(slots, members), [slots, members]);
+
+  if (mergedRanges.length === 0) {
+    return (
+      <div className="border-t border-gray-100 p-4 bg-indigo-50">
+        <div className="flex items-center justify-between mb-3">
+          <h4 className="font-bold text-indigo-900 text-sm">Best Available Times</h4>
+          {onAnalyze && (
+            <button onClick={onAnalyze} className="text-[10px] font-bold text-indigo-600 hover:text-indigo-700 uppercase tracking-wider">
+              Re-analyze
             </button>
           )}
         </div>
+        <div className="text-center py-4 text-gray-500 text-xs">
+          No availability data yet. Wait for members to fill in their times.
+        </div>
+      </div>
+    );
+  }
+
+  const allAvailable = mergedRanges.filter(r => r.isAllAvailable);
+  const missingOne = mergedRanges.filter(r => r.missingUserIds.length === 1);
+  const missingMore = mergedRanges.filter(r => r.missingUserIds.length >= 2);
+
+  const getName = (uid: string) => {
+    const m = members.find(m => m.id === uid);
+    return m?.name?.split(' ')[0] || '?';
+  };
+
+  const handleSelectRange = (range: MergedTimeRange) => {
+    if (onSelectTimeSlot) {
+      onSelectTimeSlot({
+        date: range.date,
+        time: range.startTime,
+        availableCount: range.availableCount,
+        totalMembers: range.totalMembers,
+        isAllAvailable: range.isAllAvailable,
+      });
+    }
+  };
+
+  const isRangeSelected = (range: MergedTimeRange) => {
+    return approvedTimeSlot?.date === range.date && approvedTimeSlot?.time === range.startTime;
+  };
+
+  const renderRange = (range: MergedTimeRange, index: number) => {
+    const selected = isRangeSelected(range);
+    const timeLabel = `${range.startTime} - ${range.endTime}`;
+    const dayOfWeek = getDayOfWeek(range.date);
+
+    return (
+      <button
+        key={`${range.date}-${range.startTime}-${index}`}
+        onClick={() => handleSelectRange(range)}
+        className={`w-full text-left p-3 rounded-xl border-2 transition-all ${
+          selected
+            ? 'bg-indigo-600 border-indigo-600 text-white'
+            : range.isAllAvailable
+              ? 'bg-white border-emerald-300 hover:border-emerald-500'
+              : range.missingUserIds.length === 1
+                ? 'bg-white border-amber-200 hover:border-amber-400'
+                : 'bg-white border-gray-200 hover:border-gray-400'
+        }`}
+      >
+        <div className="flex items-center justify-between mb-1">
+          <div className={`font-bold text-sm ${selected ? 'text-white' : 'text-gray-900'}`}>
+            {formatDateShort(range.date)} ({dayOfWeek})
+          </div>
+          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+            selected
+              ? 'bg-white/20 text-white'
+              : range.isAllAvailable
+                ? 'bg-emerald-100 text-emerald-700'
+                : range.missingUserIds.length === 1
+                  ? 'bg-amber-100 text-amber-700'
+                  : 'bg-rose-100 text-rose-700'
+          }`}>
+            {range.availableCount}/{range.totalMembers}
+          </span>
+        </div>
+        <div className={`text-xs font-medium mb-1.5 ${selected ? 'text-indigo-100' : 'text-gray-600'}`}>
+          {timeLabel}
+        </div>
+
+        {range.missingUserIds.length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {range.missingUserIds.map(uid => (
+              <span
+                key={uid}
+                className={`text-[9px] px-1.5 py-0.5 rounded-full ${
+                  selected ? 'bg-white/10 text-indigo-200' : 'bg-rose-50 text-rose-600'
+                }`}
+              >
+                Missing: {getName(uid)}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {selected && (
+          <span className="inline-block mt-1 bg-white/20 rounded-full px-2 py-0.5 text-[9px] font-bold uppercase">
+            Selected
+          </span>
+        )}
+      </button>
+    );
+  };
+
+  return (
+    <div className="border-t border-gray-100 p-4 bg-indigo-50">
+      <div className="flex items-center justify-between mb-3">
+        <h4 className="font-bold text-indigo-900 text-sm">Best Available Times</h4>
+        {onAnalyze && (
+          <button onClick={onAnalyze} className="text-[10px] font-bold text-indigo-600 hover:text-indigo-700 uppercase tracking-wider">
+            Re-analyze
+          </button>
+        )}
+      </div>
+
+      <div className="space-y-4 max-h-[400px] overflow-y-auto">
+        {allAvailable.length > 0 && (
+          <div>
+            <div className="flex items-center gap-2 mb-2">
+              <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+              <span className="text-xs font-bold text-emerald-700">Everyone Available ({allAvailable.length})</span>
+            </div>
+            <div className="space-y-1.5">
+              {allAvailable.map((r, i) => renderRange(r, i))}
+            </div>
+          </div>
+        )}
+
+        {missingOne.length > 0 && (
+          <div>
+            <div className="flex items-center gap-2 mb-2">
+              <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+              <span className="text-xs font-bold text-amber-700">Missing 1 Person ({missingOne.length})</span>
+            </div>
+            <div className="space-y-1.5">
+              {missingOne.map((r, i) => renderRange(r, i))}
+            </div>
+          </div>
+        )}
+
+        {missingMore.length > 0 && (
+          <div>
+            <div className="flex items-center gap-2 mb-2">
+              <span className="w-2 h-2 rounded-full bg-rose-400"></span>
+              <span className="text-xs font-bold text-rose-600">Missing 2+ People ({missingMore.length})</span>
+            </div>
+            <div className="space-y-1.5">
+              {missingMore.map((r, i) => renderRange(r, i))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {approvedTimeSlot && onSendForApproval && (
+        <button
+          onClick={onSendForApproval}
+          className="w-full mt-3 bg-indigo-600 text-white py-2 rounded-xl font-bold text-sm hover:bg-indigo-700 transition-colors"
+        >
+          Send to Chat for Approval
+        </button>
       )}
     </div>
   );

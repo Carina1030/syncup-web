@@ -30,7 +30,7 @@ function convertToTimeSlot(dateTime: string): string | null {
     const timeSlot = `${displayHours}:${displayMinutes} ${period}`;
     
     // Check if time slot exists in our available slots
-    if (TIME_SLOTS.includes(timeSlot)) {
+    if ((TIME_SLOTS as readonly string[]).includes(timeSlot)) {
       return timeSlot;
     }
     

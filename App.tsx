@@ -816,33 +816,6 @@ const App: React.FC = () => {
     setShowMemberForm(false);
   };
 
-  // Legacy: kept for compatibility but no longer used for direct add
-  const _handleAddMemberLegacy = (memberData: { name: string; role: 'Director' | 'Co-manager' | 'Member'; badge?: string }) => {
-    if (!event) return;
-    const newMember: User = {
-      id: Math.random().toString(36).substr(2, 9),
-      name: memberData.name,
-      role: memberData.role,
-      badge: memberData.badge
-    };
-    
-    updateCurrentEvent(prev => ({
-      ...prev,
-      members: [...prev.members, newMember],
-      messages: [
-        ...prev.messages,
-        {
-          id: `sys-member-${Date.now()}`,
-          userId: 'system',
-          userName: 'SyncUp',
-          text: `${memberData.badge ? memberData.badge + ' ' : ''}${memberData.name} joined the event`,
-          timestamp: Date.now(),
-          isSystem: true
-        }
-      ]
-    }));
-    setShowMemberForm(false);
-  };
 
   // Update member (badge, role, name)
   const handleUpdateMember = (memberId: string, updates: Partial<User>) => {
@@ -1325,27 +1298,6 @@ const App: React.FC = () => {
 
     // Switch to chat tab
     setActiveTab('chat');
-  };
-
-  const handleLockEvent = (date: string, time: string) => {
-    if (!event || !currentUser) return;
-    const lockedKey = `${date}|${time}`;
-    updateCurrentEvent(prev => ({
-      ...prev,
-      isLocked: true,
-      lockedSlot: lockedKey,
-      messages: [
-        ...prev.messages,
-        {
-          id: `sys-lock-${Date.now()}`,
-          userId: 'system',
-          userName: 'SyncUp',
-          text: `Event locked for ${date} at ${time}`,
-          timestamp: Date.now(),
-          isSystem: true
-        }
-      ]
-    }));
   };
 
   const handleUnlockEvent = () => {
@@ -2850,8 +2802,6 @@ const FriendsModal: React.FC<{
   onAcceptEventInvitation, onRejectEventInvitation, onInviteToEvent, hasCurrentEvent
 }) => {
   const [activeTab, setActiveTab] = useState<'friends' | 'requests' | 'invitations'>('friends');
-  
-  const totalNotifications = friendRequests.length + eventInvitations.length;
   
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">

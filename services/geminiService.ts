@@ -6,8 +6,8 @@ import { Logistics } from "../types";
  * This function returns null and logistics must be updated manually through the Logistics Hub.
  */
 export async function parseLogisticsFromChat(
-  message: string,
-  currentLogistics: Logistics
+  _message: string,
+  _currentLogistics: Logistics
 ): Promise<Partial<Logistics> | null> {
   // AI parsing disabled - @google/genai uses require() which doesn't work in browsers
   // Users can update logistics manually through the Logistics Hub interface

@@ -96,9 +96,9 @@ export async function fetchCalDAVEvents(
  * This uses iCloud's web interface (requires authentication)
  */
 export async function fetchICloudCalendarDirect(
-  username: string,
-  password: string,
-  date: Date = new Date()
+  _username: string,
+  _password: string,
+  _date: Date = new Date()
 ): Promise<any[]> {
   // Note: Direct iCloud access from browser is limited due to:
   // 1. CORS restrictions
