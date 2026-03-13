@@ -577,6 +577,7 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
         onMouseLeave={handleDragEnd}
         onMouseUp={handleDragEnd}
         onTouchEnd={handleDragEnd}
+        onTouchCancel={handleDragEnd}
       >
         <div className="grid grid-cols-1 gap-2">
           {TIME_SLOTS.map((time, index) => {
@@ -603,9 +604,15 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
                 }}
                 onMouseEnter={() => handleDragMove(index)}
                 onTouchStart={(e) => {
+                  e.preventDefault();
                   handleDragStart(index, time);
                 }}
+                onTouchEnd={(e) => {
+                  e.preventDefault();
+                  handleDragEnd();
+                }}
                 onTouchMove={(e) => {
+                  e.preventDefault();
                   const touch = e.touches[0];
                   const element = document.elementFromPoint(touch.clientX, touch.clientY);
                   const slotElement = element?.closest('[data-slot-index]');
@@ -615,6 +622,7 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
                   }
                 }}
                 data-slot-index={index}
+                style={{ touchAction: 'none' }}
                 className={`
                   relative flex items-center p-3 rounded-xl border transition-all duration-100 cursor-pointer
                   ${isLocked ? 'cursor-default' : 'active:scale-[0.98]'}
