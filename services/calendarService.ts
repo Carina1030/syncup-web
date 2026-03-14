@@ -72,6 +72,14 @@ export async function fetchGoogleCalendarEvents(
   if (!response.ok) {
     const body = await response.text();
     console.error('Google Calendar API error:', response.status, body);
+    if (response.status === 403) {
+      throw new Error(
+        'Google Calendar API is not enabled. Go to https://console.cloud.google.com/apis/library/calendar-json.googleapis.com and click "Enable" for your project.'
+      );
+    }
+    if (response.status === 401) {
+      throw new Error('Access token expired or invalid. Please re-link Google Calendar.');
+    }
     throw new Error(`Google Calendar API error: ${response.status}`);
   }
 

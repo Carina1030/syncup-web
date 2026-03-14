@@ -1088,11 +1088,11 @@ const App: React.FC = () => {
       const end = event?.dateRange?.endDate;
       const data = await fetchGoogleCalendarEvents(googleAccessToken, start, end);
       setCalendarEvents(data);
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to sync Google Calendar:", err);
       setIsGoogleCalendarLinked(false);
       setGoogleAccessToken(null);
-      alert("Calendar sync failed. Your session may have expired — please re-link Google Calendar.");
+      alert(err?.message || "Calendar sync failed. Please re-link Google Calendar.");
     } finally {
       setIsSyncingCalendar(false);
     }
@@ -1111,9 +1111,9 @@ const App: React.FC = () => {
           const end = event?.dateRange?.endDate;
           const data = await fetchGoogleCalendarEvents(result.accessToken, start, end);
           setCalendarEvents(data);
-        } catch (err) {
+        } catch (err: any) {
           console.error("Failed to fetch calendar after linking:", err);
-          alert("Failed to fetch calendar events. Please try again.");
+          alert(err?.message || "Failed to fetch calendar events. Please try again.");
         } finally {
           setIsSyncingCalendar(false);
         }
