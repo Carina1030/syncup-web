@@ -38,20 +38,50 @@ const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 const auth = getAuth(app);
 const googleProvider = new GoogleAuthProvider();
-googleProvider.addScope('https://www.googleapis.com/auth/calendar.readonly');
+
+// Provider used when linking Google Calendar (forces consent to get fresh token with calendar scope)
+function getCalendarProvider(): GoogleAuthProvider {
+  const provider = new GoogleAuthProvider();
+  provider.addScope('https://www.googleapis.com/auth/calendar.readonly');
+  provider.setCustomParameters({ prompt: 'consent' });
+  return provider;
+}
 
 // ============ Authentication Functions ============
 
-// Sign in with Google (requests Calendar read access)
+// Sign in with Google (basic login, no calendar scope)
 export async function signInWithGoogle(): Promise<{ user: FirebaseUser; accessToken: string | null } | null> {
   try {
     const result = await signInWithPopup(auth, googleProvider);
     const credential = GoogleAuthProvider.credentialFromResult(result);
-    const accessToken = (credential as any)?.accessToken || null;
-    console.log("Google sign in successful:", result.user.email);
+    const accessToken = 
+      (credential as any)?.accessToken ||
+      (result as any)?._tokenResponse?.oauthAccessToken ||
+      null;
     return { user: result.user, accessToken };
   } catch (error) {
     console.error("Error signing in with Google:", error);
+    throw error;
+  }
+}
+
+// Sign in with Google + Calendar scope (forces consent to obtain calendar access token)
+export async function signInWithGoogleCalendar(): Promise<{ user: FirebaseUser; accessToken: string } | null> {
+  try {
+    const provider = getCalendarProvider();
+    const result = await signInWithPopup(auth, provider);
+    const credential = GoogleAuthProvider.credentialFromResult(result);
+    const accessToken = 
+      (credential as any)?.accessToken ||
+      (result as any)?._tokenResponse?.oauthAccessToken ||
+      null;
+    if (!accessToken) {
+      console.error("Failed to obtain Google Calendar access token");
+      return null;
+    }
+    return { user: result.user, accessToken };
+  } catch (error) {
+    console.error("Error signing in with Google Calendar:", error);
     throw error;
   }
 }

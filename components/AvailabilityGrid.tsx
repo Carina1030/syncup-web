@@ -590,10 +590,12 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
                 className={`
                   relative flex items-center p-3 rounded-xl border transition-all duration-100 cursor-pointer
                   ${isLocked ? 'cursor-default' : 'active:scale-[0.98]'}
-                  ${available && !wouldBeDeselected ? 'border-emerald-500 ring-2 ring-emerald-500/20' : 'border-gray-100'}
-                  ${isLockedSlot ? 'bg-indigo-600 border-indigo-600 text-white' : heatmapClass}
-                  ${conflict && !available && !isLockedSlot ? 'bg-rose-50 border-rose-100' : ''}
-                  ${wouldBeSelected && !available ? 'ring-2 ring-emerald-400 border-emerald-400 bg-emerald-50' : ''}
+                  ${conflict && !isLockedSlot
+                    ? 'bg-rose-100 border-rose-300 ring-1 ring-rose-200'
+                    : `${available && !wouldBeDeselected ? 'border-emerald-500 ring-2 ring-emerald-500/20' : 'border-gray-100'}
+                       ${isLockedSlot ? 'bg-indigo-600 border-indigo-600 text-white' : heatmapClass}`
+                  }
+                  ${wouldBeSelected && !available && !conflict ? 'ring-2 ring-emerald-400 border-emerald-400 bg-emerald-50' : ''}
                   ${wouldBeDeselected && available ? 'ring-2 ring-rose-400 border-rose-400 opacity-60' : ''}
                 `}
               >
@@ -603,8 +605,8 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
                       {time}
                     </span>
                     {conflict && !isLockedSlot && (
-                      <span className="bg-rose-500 text-white text-[9px] px-1.5 py-0.5 rounded-md font-black uppercase">
-                        Conflict
+                      <span className="bg-rose-500 text-white text-[9px] px-1.5 py-0.5 rounded-md font-bold">
+                        {conflict.title}
                       </span>
                     )}
                     {isBeingDragged && !isLockedSlot && (

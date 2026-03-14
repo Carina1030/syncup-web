@@ -9,7 +9,7 @@ import { fetchGoogleCalendarEvents } from './services/calendarService';
 import { getDatesInRange, formatDateShort } from './utils/dateUtils';
 import { analyzeAvailability } from './utils/availabilityAnalysis';
 import { 
-  saveEvent, getEvent, subscribeToEvent, getUserEvents, signInWithGoogle, signOutUser, subscribeToAuthState,
+  saveEvent, getEvent, subscribeToEvent, getUserEvents, signInWithGoogle, signInWithGoogleCalendar, signOutUser, subscribeToAuthState,
   saveUserProfile, getUserProfile, getUserFriends,
   sendFriendRequest, updateFriendRequestStatus, addFriend, removeFriend,
   sendEventInvitation, updateEventInvitationStatus,
@@ -1098,10 +1098,10 @@ const App: React.FC = () => {
     }
   };
 
-  // Link Google Calendar (re-sign-in to get fresh token with calendar scope)
+  // Link Google Calendar (forces consent popup with calendar scope)
   const handleLinkGoogleCalendar = async () => {
     try {
-      const result = await signInWithGoogle();
+      const result = await signInWithGoogleCalendar();
       if (result?.accessToken) {
         setGoogleAccessToken(result.accessToken);
         setIsGoogleCalendarLinked(true);
@@ -1113,9 +1113,12 @@ const App: React.FC = () => {
           setCalendarEvents(data);
         } catch (err) {
           console.error("Failed to fetch calendar after linking:", err);
+          alert("Failed to fetch calendar events. Please try again.");
         } finally {
           setIsSyncingCalendar(false);
         }
+      } else {
+        alert("Could not get calendar access. Please try again and grant calendar permission.");
       }
     } catch (error) {
       console.error('Failed to link Google Calendar:', error);
