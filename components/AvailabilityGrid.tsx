@@ -9,7 +9,7 @@ interface AvailabilityGridProps {
   currentUser: User;
   members: User[];
   dateRange: DateRange;
-  timeRange?: TimeRange; // Optional time range filter
+  timeRange?: TimeRange;
   onToggle: (date: string, time: string, isAvailable: boolean) => void;
   onBatchToggle?: (updates: Array<{ date: string; time: string; isAvailable: boolean }>) => void;
   isLocked: boolean;
@@ -18,10 +18,9 @@ interface AvailabilityGridProps {
   isSyncing: boolean;
   onSyncCalendar: () => void;
   onClearCalendar?: () => void;
-  isAppleCalendarConnected?: boolean;
-  appleCalendarEmail?: string | null;
-  onConnectAppleCalendar?: () => void;
-  onDisconnectAppleCalendar?: () => void;
+  isGoogleCalendarLinked?: boolean;
+  onLinkGoogleCalendar?: () => void;
+  onDisconnectGoogleCalendar?: () => void;
   proposedTimeSlots?: ProposedTimeSlot[];
   approvedTimeSlot?: ProposedTimeSlot;
   onAnalyze?: () => void;
@@ -44,10 +43,8 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
   isSyncing,
   onSyncCalendar,
   onClearCalendar,
-  isAppleCalendarConnected = false,
-  appleCalendarEmail = null,
-  onConnectAppleCalendar,
-  onDisconnectAppleCalendar,
+  isGoogleCalendarLinked = false,
+  onLinkGoogleCalendar,
   proposedTimeSlots,
   approvedTimeSlot,
   onAnalyze,
@@ -106,7 +103,7 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
   };
 
   const getConflict = (time: string) => {
-    return calendarEvents.find(e => e.startTime === time);
+    return calendarEvents.find(e => e.date === selectedDate && e.startTime === time);
   };
 
   const getSlotsForDate = (date: string) => {
@@ -355,62 +352,40 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
         <div className="flex justify-between items-center">
           <h3 className="font-semibold text-gray-900">Availability Grid</h3>
           <div className="flex items-center space-x-2">
-            {calendarEvents.length > 0 && onClearCalendar && (
-              <button
-                onClick={onClearCalendar}
-                className="px-2 py-1 text-[9px] font-bold text-gray-500 hover:text-gray-700 uppercase tracking-wider transition-colors"
-                title="Clear calendar events"
-              >
-                Clear
-              </button>
-            )}
-            {isAppleCalendarConnected ? (
+            {isGoogleCalendarLinked ? (
               <>
-                <button
-                  onClick={onDisconnectAppleCalendar}
-                  className="px-2 py-1 text-[9px] font-bold text-emerald-600 hover:text-emerald-700 uppercase tracking-wider transition-colors"
-                  title={`Connected: ${appleCalendarEmail || 'Apple Calendar'}`}
-                >
-                  ✓ Connected
-                </button>
-                <button 
-                  onClick={onSyncCalendar}
-                  disabled={isSyncing}
-                  className="flex items-center space-x-1 px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all bg-indigo-600 text-white hover:bg-indigo-700"
-                  title="Sync from Apple Calendar"
-                >
-                  {isSyncing ? (
-                    <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                  ) : <Icons.Calendar />}
-                  <span>{calendarEvents.length > 0 ? `${calendarEvents.length} Events` : 'Sync Calendar'}</span>
-                </button>
-              </>
-            ) : (
-              <>
-                {onConnectAppleCalendar && (
+                {calendarEvents.length > 0 && onClearCalendar && (
                   <button
-                    onClick={onConnectAppleCalendar}
-                    className="px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-emerald-600 text-white hover:bg-emerald-700 transition-colors"
-                    title="Connect Apple Calendar (iCloud)"
+                    onClick={onClearCalendar}
+                    className="px-2 py-1 text-[9px] font-bold text-gray-500 hover:text-gray-700 uppercase tracking-wider transition-colors"
                   >
-                    Connect Apple
+                    Clear
                   </button>
                 )}
                 <button 
                   onClick={onSyncCalendar}
                   disabled={isSyncing}
-                  className={`flex items-center space-x-1 px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all
-                    ${calendarEvents.length > 0 
-                      ? 'bg-indigo-50 text-indigo-600 border border-indigo-200 hover:bg-indigo-100' 
-                      : 'bg-gray-900 text-white hover:bg-gray-800'}`}
-                  title="Sync calendar (demo mode)"
+                  className="flex items-center space-x-1 px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all bg-indigo-600 text-white hover:bg-indigo-700"
                 >
                   {isSyncing ? (
                     <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
                   ) : <Icons.Calendar />}
-                  <span>{calendarEvents.length > 0 ? `${calendarEvents.length} Events` : 'Sync Calendar'}</span>
+                  <span>{calendarEvents.length > 0 ? `${calendarEvents.length} Events` : 'Refresh'}</span>
                 </button>
               </>
+            ) : (
+              onLinkGoogleCalendar && (
+                <button
+                  onClick={onLinkGoogleCalendar}
+                  disabled={isSyncing}
+                  className="flex items-center space-x-1 px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all bg-gray-900 text-white hover:bg-gray-800"
+                >
+                  {isSyncing ? (
+                    <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                  ) : <Icons.Calendar />}
+                  <span>Link Google Calendar</span>
+                </button>
+              )
             )}
           </div>
         </div>
@@ -562,7 +537,7 @@ const AvailabilityGrid: React.FC<AvailabilityGridProps> = ({
 
       <div 
         ref={gridRef}
-        className="p-4 max-h-[400px] overflow-y-auto no-scrollbar select-none"
+        className="px-6 py-4 max-h-[400px] overflow-y-auto thin-scrollbar select-none"
         onMouseLeave={handleDragEnd}
         onMouseUp={handleDragEnd}
         onTouchEnd={handleDragEnd}

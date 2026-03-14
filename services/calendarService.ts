@@ -1,292 +1,143 @@
 import { CalendarEvent } from "../types";
-import { TIME_SLOTS } from "../constants";
-import { 
-  fetchCalDAVEvents, 
-  getICloudCalDAVUrl, 
-  isCalDAVConfigured,
-  getCalDAVCredentials,
-  CalDAVCredentials
-} from "./appleCalendarAuth";
+import { ALL_TIME_SLOTS } from "../constants";
 
-// Demo calendar events for demonstration purposes
-const DEMO_CALENDAR_EVENTS: CalendarEvent[] = [
-  { id: 'demo-1', title: 'Team Meeting', startTime: '10:00 AM', durationMinutes: 60 },
-  { id: 'demo-2', title: 'Lunch Break', startTime: '12:00 PM', durationMinutes: 60 },
-  { id: 'demo-3', title: 'Client Call', startTime: '02:00 PM', durationMinutes: 30 },
-  { id: 'demo-4', title: 'Gym Session', startTime: '06:00 PM', durationMinutes: 90 },
-];
+const GOOGLE_CALENDAR_API = 'https://www.googleapis.com/calendar/v3';
 
 /**
- * Convert ISO date string to time slot format (e.g., "10:00 AM")
+ * Convert a Date object to our time slot format (e.g., "10:00 AM").
+ * Snaps to the nearest available slot within 30 minutes.
  */
-function convertToTimeSlot(dateTime: string): string | null {
-  try {
-    const date = new Date(dateTime);
-    const hours = date.getHours();
-    const minutes = date.getMinutes();
-    const period = hours >= 12 ? 'PM' : 'AM';
-    const displayHours = hours % 12 || 12;
-    const displayMinutes = minutes.toString().padStart(2, '0');
-    const timeSlot = `${displayHours}:${displayMinutes} ${period}`;
-    
-    // Check if time slot exists in our available slots
-    if ((TIME_SLOTS as readonly string[]).includes(timeSlot)) {
-      return timeSlot;
-    }
-    
-    // Find closest time slot
-    const timeInMinutes = hours * 60 + minutes;
-    for (const slot of TIME_SLOTS) {
-      const [time, period] = slot.split(' ');
-      const [h, m] = time.split(':').map(Number);
-      let slotMinutes = h % 12 * 60 + m;
-      if (period === 'PM' && h !== 12) slotMinutes += 12 * 60;
-      if (period === 'AM' && h === 12) slotMinutes = m;
-      
-      if (Math.abs(slotMinutes - timeInMinutes) <= 30) {
-        return slot;
-      }
-    }
-    
-    return null;
-  } catch (error) {
-    console.error('Error converting date:', error);
-    return null;
+function toTimeSlot(date: Date): string | null {
+  const hours = date.getHours();
+  const minutes = date.getMinutes();
+  const period = hours >= 12 ? 'PM' : 'AM';
+  const displayHours = hours % 12 || 12;
+  const formatted = `${String(displayHours).padStart(2, '0')}:${String(minutes).padStart(2, '0')} ${period}`;
+
+  if ((ALL_TIME_SLOTS as readonly string[]).includes(formatted)) {
+    return formatted;
   }
+
+  const totalMinutes = hours * 60 + minutes;
+  for (const slot of ALL_TIME_SLOTS) {
+    const [time, slotPeriod] = slot.split(' ');
+    const [h, m] = time.split(':').map(Number);
+    let slotMinutes = (h % 12) * 60 + m;
+    if (slotPeriod === 'PM' && h !== 12) slotMinutes += 12 * 60;
+    if (slotPeriod === 'AM' && h === 12) slotMinutes = m;
+
+    if (Math.abs(slotMinutes - totalMinutes) <= 30) {
+      return slot;
+    }
+  }
+  return null;
+}
+
+function toDateString(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
 /**
- * Parse iCal format event to CalendarEvent
+ * Fetch events from Google Calendar for a date range.
+ * For multi-day events or all-day events, they are expanded into each
+ * overlapping date within the range.
  */
-function parseICalEvent(iCalData: string): CalendarEvent | null {
-  try {
-    // Simple iCal parser (for basic events)
-    const lines = iCalData.split('\n');
-    let summary = '';
-    let dtstart = '';
-    let dtend = '';
-    let uid = '';
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
-      
-      if (line.startsWith('SUMMARY:')) {
-        summary = line.substring(8);
-      } else if (line.startsWith('DTSTART')) {
-        const value = line.includes(':') ? line.split(':')[1] : lines[i + 1]?.trim();
-        dtstart = value || '';
-      } else if (line.startsWith('DTEND')) {
-        const value = line.includes(':') ? line.split(':')[1] : lines[i + 1]?.trim();
-        dtend = value || '';
-      } else if (line.startsWith('UID:')) {
-        uid = line.substring(4);
-      }
-    }
-
-    if (!dtstart) return null;
-
-    // Parse date (handle both DATE and DATE-TIME formats)
-    let startDate: Date;
-    if (dtstart.length === 8) {
-      // DATE format: YYYYMMDD
-      const year = parseInt(dtstart.substring(0, 4));
-      const month = parseInt(dtstart.substring(4, 6)) - 1;
-      const day = parseInt(dtstart.substring(6, 8));
-      startDate = new Date(year, month, day);
-    } else {
-      // DATE-TIME format
-      startDate = new Date(dtstart.replace(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})/, '$1-$2-$3T$4:$5:$6'));
-    }
-
-    let endDate: Date;
-    if (dtend) {
-      if (dtend.length === 8) {
-        const year = parseInt(dtend.substring(0, 4));
-        const month = parseInt(dtend.substring(4, 6)) - 1;
-        const day = parseInt(dtend.substring(6, 8));
-        endDate = new Date(year, month, day);
-      } else {
-        endDate = new Date(dtend.replace(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})/, '$1-$2-$3T$4:$5:$6'));
-      }
-    } else {
-      endDate = new Date(startDate.getTime() + 60 * 60 * 1000); // Default 1 hour
-    }
-
-    const timeSlot = convertToTimeSlot(startDate.toISOString());
-    if (!timeSlot) return null;
-
-    const durationMinutes = Math.round((endDate.getTime() - startDate.getTime()) / (1000 * 60));
-
-    return {
-      id: uid || `ical-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-      title: summary || 'Untitled Event',
-      startTime: timeSlot,
-      durationMinutes: durationMinutes || 60,
-    };
-  } catch (error) {
-    console.error('Error parsing iCal event:', error);
-    return null;
-  }
-}
-
-/**
- * Fetch events from Apple Calendar via CalDAV
- */
-async function fetchAppleCalendarEvents(
-  credentials: CalDAVCredentials,
-  date: Date = new Date()
+export async function fetchGoogleCalendarEvents(
+  accessToken: string,
+  startDate?: string,
+  endDate?: string
 ): Promise<CalendarEvent[]> {
-  try {
-    const startOfDay = new Date(date);
-    startOfDay.setHours(0, 0, 0, 0);
-    
-    const endOfDay = new Date(date);
-    endOfDay.setHours(23, 59, 59, 999);
+  const timeMin = startDate ? new Date(`${startDate}T00:00:00`) : new Date();
+  timeMin.setHours(0, 0, 0, 0);
 
-    // Fetch events from CalDAV
-    const iCalEvents = await fetchCalDAVEvents(
-      credentials.serverUrl,
-      credentials.username,
-      credentials.password,
-      startOfDay,
-      endOfDay
+  const timeMax = endDate ? new Date(`${endDate}T23:59:59`) : new Date(timeMin);
+  if (!endDate) timeMax.setHours(23, 59, 59, 999);
+
+  const params = new URLSearchParams({
+    timeMin: timeMin.toISOString(),
+    timeMax: timeMax.toISOString(),
+    singleEvents: 'true',
+    orderBy: 'startTime',
+    maxResults: '250',
+  });
+
+  const response = await fetch(
+    `${GOOGLE_CALENDAR_API}/calendars/primary/events?${params}`,
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  );
+
+  if (!response.ok) {
+    const body = await response.text();
+    console.error('Google Calendar API error:', response.status, body);
+    throw new Error(`Google Calendar API error: ${response.status}`);
+  }
+
+  const data = await response.json();
+  const events: CalendarEvent[] = [];
+
+  for (const item of data.items || []) {
+    if (item.status === 'cancelled') continue;
+
+    const startStr: string | undefined = item.start?.dateTime || item.start?.date;
+    const endStr: string | undefined = item.end?.dateTime || item.end?.date;
+    if (!startStr) continue;
+
+    const isAllDay = !item.start?.dateTime;
+
+    if (isAllDay) {
+      // All-day events span multiple dates — mark every hour as conflict for each day
+      // Google returns end date as exclusive, e.g. start=2025-03-10, end=2025-03-11 means just Mar 10
+      const allDayStart = new Date(`${startStr}T00:00:00`);
+      const allDayEnd = endStr ? new Date(`${endStr}T00:00:00`) : new Date(allDayStart.getTime() + 86400000);
+      const cursor = new Date(allDayStart);
+      while (cursor < allDayEnd) {
+        const dateStr = toDateString(cursor);
+        for (const slot of ALL_TIME_SLOTS) {
+          events.push({
+            id: `${item.id}-${dateStr}-${slot}`,
+            title: item.summary || 'All Day Event',
+            date: dateStr,
+            startTime: slot,
+            durationMinutes: 60,
+          });
+        }
+        cursor.setDate(cursor.getDate() + 1);
+      }
+    } else {
+      const eventStart = new Date(startStr);
+      const eventEnd = endStr ? new Date(endStr) : new Date(eventStart.getTime() + 3600000);
+      const durationMinutes = Math.round((eventEnd.getTime() - eventStart.getTime()) / 60000) || 60;
+      const dateStr = toDateString(eventStart);
+      const slot = toTimeSlot(eventStart);
+      if (!slot) continue;
+
+      events.push({
+        id: item.id || `gcal-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+        title: item.summary || 'Untitled Event',
+        date: dateStr,
+        startTime: slot,
+        durationMinutes,
+      });
+    }
+  }
+
+  return events;
+}
+
+/**
+ * Quick check: try a lightweight request to see if the token is still valid.
+ */
+export async function isGoogleCalendarConnected(accessToken: string): Promise<boolean> {
+  try {
+    const res = await fetch(
+      `${GOOGLE_CALENDAR_API}/calendars/primary?fields=summary`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
     );
-
-    const events: CalendarEvent[] = [];
-    
-    for (const iCalData of iCalEvents) {
-      const event = parseICalEvent(iCalData);
-      if (event) {
-        events.push(event);
-      }
-    }
-
-    return events;
-  } catch (error) {
-    console.error('Error fetching Apple Calendar events:', error);
-    throw error;
-  }
-}
-
-/**
- * Fetches calendar data from Apple Calendar (iCloud) via CalDAV or returns demo data.
- * 
- * @param useRealCalendar - If true, attempts to fetch from Apple Calendar. If false or not authenticated, returns demo data.
- * @param useDemoData - Fallback to demo data if real calendar fails
- */
-export async function fetchUserCalendar(
-  useRealCalendar: boolean = false,
-  useDemoData: boolean = true
-): Promise<CalendarEvent[]> {
-  // If using real calendar, try to fetch from Apple Calendar
-  if (useRealCalendar && isCalDAVConfigured()) {
-    try {
-      const credentials = getCalDAVCredentials();
-      if (!credentials) {
-        throw new Error('CalDAV credentials not found');
-      }
-
-      const events = await fetchAppleCalendarEvents(credentials);
-      return events;
-    } catch (error) {
-      console.error('Failed to fetch from Apple Calendar:', error);
-      // Fall back to demo data if enabled
-      if (useDemoData) {
-        console.log('Falling back to demo calendar data');
-        await new Promise(resolve => setTimeout(resolve, 800));
-        return DEMO_CALENDAR_EVENTS.map(event => ({
-          ...event,
-          id: `${event.id}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
-        }));
-      }
-      throw error;
-    }
-  }
-
-  // Use demo data
-  if (useDemoData) {
-    await new Promise(resolve => setTimeout(resolve, 800));
-    return DEMO_CALENDAR_EVENTS.map(event => ({
-      ...event,
-      id: `${event.id}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
-    }));
-  }
-
-  return [];
-}
-
-/**
- * Check if Apple Calendar is configured
- */
-export function checkAppleCalendarAuth(): boolean {
-  return isCalDAVConfigured();
-}
-
-/**
- * Authenticate with Apple Calendar (iCloud)
- */
-export async function authenticateAppleCalendar(
-  username: string,
-  password: string,
-  serverUrl?: string
-): Promise<boolean> {
-  try {
-    const url = serverUrl || getICloudCalDAVUrl(username);
-    
-    // Test connection
-    await fetchCalDAVEvents(url, username, password);
-    
-    // Store credentials if connection successful
-    const { setCalDAVCredentials } = await import('./appleCalendarAuth');
-    setCalDAVCredentials({
-      serverUrl: url,
-      username,
-      password,
-    });
-    
-    return true;
-  } catch (error) {
-    console.error('Failed to authenticate with Apple Calendar:', error);
+    return res.ok;
+  } catch {
     return false;
   }
-}
-
-/**
- * Disconnect from Apple Calendar
- */
-export async function disconnectAppleCalendar(): Promise<void> {
-  const { clearCalDAVCredentials } = await import('./appleCalendarAuth');
-  clearCalDAVCredentials();
-}
-
-/**
- * Generates random calendar events for testing/demo purposes
- */
-export function generateRandomCalendarEvents(count: number = 3): CalendarEvent[] {
-  const eventTitles = [
-    'Team Meeting', 'Lunch Break', 'Client Call', 'Gym Session',
-    'Doctor Appointment', 'Coffee Chat', 'Project Review', 'Training Session',
-    'Conference Call', 'Personal Time', 'Workout', 'Study Session'
-  ];
-  
-  const events: CalendarEvent[] = [];
-  const usedTimes = new Set<string>();
-  
-  for (let i = 0; i < count && usedTimes.size < TIME_SLOTS.length; i++) {
-    let timeSlot: string;
-    do {
-      timeSlot = TIME_SLOTS[Math.floor(Math.random() * TIME_SLOTS.length)];
-    } while (usedTimes.has(timeSlot));
-    
-    usedTimes.add(timeSlot);
-    
-    events.push({
-      id: `random-${Date.now()}-${i}-${Math.random().toString(36).substr(2, 9)}`,
-      title: eventTitles[Math.floor(Math.random() * eventTitles.length)],
-      startTime: timeSlot,
-      durationMinutes: [30, 60, 90, 120][Math.floor(Math.random() * 4)]
-    });
-  }
-  
-  return events;
 }

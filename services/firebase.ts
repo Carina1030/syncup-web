@@ -38,15 +38,18 @@ const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 const auth = getAuth(app);
 const googleProvider = new GoogleAuthProvider();
+googleProvider.addScope('https://www.googleapis.com/auth/calendar.readonly');
 
 // ============ Authentication Functions ============
 
-// Sign in with Google
-export async function signInWithGoogle(): Promise<FirebaseUser | null> {
+// Sign in with Google (requests Calendar read access)
+export async function signInWithGoogle(): Promise<{ user: FirebaseUser; accessToken: string | null } | null> {
   try {
     const result = await signInWithPopup(auth, googleProvider);
+    const credential = GoogleAuthProvider.credentialFromResult(result);
+    const accessToken = (credential as any)?.accessToken || null;
     console.log("Google sign in successful:", result.user.email);
-    return result.user;
+    return { user: result.user, accessToken };
   } catch (error) {
     console.error("Error signing in with Google:", error);
     throw error;

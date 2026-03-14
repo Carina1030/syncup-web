@@ -30,6 +30,7 @@ export const MEMBER_BADGES = [
 export interface CalendarEvent {
   id: string;
   title: string;
+  date: string; // e.g., "2025-03-10" matching our grid dates
   startTime: string; // e.g., "10:00 AM" matching our grid slots
   durationMinutes: number;
 }

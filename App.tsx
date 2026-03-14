@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { User, EventData, Message, AvailabilitySlot, CalendarEvent, ProposedTimeSlot, Logistics, MEMBER_BADGES, UserProfile, FriendRequest, EventInvitation } from './types';
-import { TIME_SLOTS, ALL_TIME_SLOTS, Icons } from './constants';
+import { ALL_TIME_SLOTS, Icons } from './constants';
 import AvailabilityGrid from './components/AvailabilityGrid';
 import LogisticsHub from './components/LogisticsHub';
 import ChatRoom from './components/ChatRoom';
 import { parseLogisticsFromChat } from './services/geminiService';
-import { fetchUserCalendar, checkAppleCalendarAuth, authenticateAppleCalendar, disconnectAppleCalendar } from './services/calendarService';
+import { fetchGoogleCalendarEvents } from './services/calendarService';
 import { getDatesInRange, formatDateShort } from './utils/dateUtils';
 import { analyzeAvailability } from './utils/availabilityAnalysis';
 import { 
@@ -43,13 +43,10 @@ const saveToStorage = <T,>(key: string, value: T): void => {
 
 const App: React.FC = () => {
   const [showMemberForm, setShowMemberForm] = useState(false);
-  const [showCalendarForm, setShowCalendarForm] = useState(false);
   const [isSyncingCalendar, setIsSyncingCalendar] = useState(false);
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
-  const [isAppleCalendarConnected, setIsAppleCalendarConnected] = useState(false);
-  const [appleCalendarEmail, setAppleCalendarEmail] = useState<string | null>(null);
-  const [useRealCalendar, setUseRealCalendar] = useState(false);
-  const [showAppleCalendarForm, setShowAppleCalendarForm] = useState(false);
+  const [googleAccessToken, setGoogleAccessToken] = useState<string | null>(null);
+  const [isGoogleCalendarLinked, setIsGoogleCalendarLinked] = useState(false);
   const [showEventCreator, setShowEventCreator] = useState(false);
   const [showEventList, setShowEventList] = useState(false);
   const [showMemberManager, setShowMemberManager] = useState(false);
@@ -289,8 +286,9 @@ const App: React.FC = () => {
   // Handle Google login
   const handleGoogleLogin = async () => {
     try {
-      const firebaseUser = await signInWithGoogle();
-      if (firebaseUser) {
+      const result = await signInWithGoogle();
+      if (result) {
+        const { user: firebaseUser, accessToken } = result;
         const user: User = {
           id: firebaseUser.uid,
           name: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'User',
@@ -301,6 +299,10 @@ const App: React.FC = () => {
         setCurrentUser(user);
         setIsLoggedIn(true);
         saveToStorage(STORAGE_KEYS.USER, user);
+        if (accessToken) {
+          setGoogleAccessToken(accessToken);
+          setIsGoogleCalendarLinked(true);
+        }
       }
     } catch (error) {
       console.error('Google login failed:', error);
@@ -322,6 +324,9 @@ const App: React.FC = () => {
     setFriends([]);
     setFriendRequests([]);
     setEventInvitations([]);
+    setCalendarEvents([]);
+    setGoogleAccessToken(null);
+    setIsGoogleCalendarLinked(false);
     localStorage.removeItem(STORAGE_KEYS.USER);
   };
 
@@ -1071,91 +1076,58 @@ const App: React.FC = () => {
     });
   };
 
-  // Add calendar event
-  const handleAddCalendarEvent = (eventData: { title: string; startTime: string; durationMinutes: number }) => {
-    const newEvent: CalendarEvent = {
-      id: Math.random().toString(36).substr(2, 9),
-      title: eventData.title,
-      startTime: eventData.startTime,
-      durationMinutes: eventData.durationMinutes
-    };
-    setCalendarEvents((prev: CalendarEvent[]) => [...prev, newEvent]);
-    setShowCalendarForm(false);
-  };
-
-  // Remove calendar event
-  const handleRemoveCalendarEvent = (eventId: string) => {
-    setCalendarEvents((prev: CalendarEvent[]) => prev.filter((e: CalendarEvent) => e.id !== eventId));
-  };
-
-  // Check Apple Calendar connection status on mount
-  React.useEffect(() => {
-    const checkConnection = async () => {
-      const connected = checkAppleCalendarAuth();
-      setIsAppleCalendarConnected(connected);
-      if (connected) {
-        // Get stored email from credentials if available
-        const { getCalDAVCredentials } = await import('./services/appleCalendarAuth');
-        const credentials = getCalDAVCredentials();
-        if (credentials) {
-          setAppleCalendarEmail(credentials.username);
-          setUseRealCalendar(true);
-        }
-      }
-    };
-    checkConnection();
-  }, []);
-
-  // Handle Apple Calendar authentication
-  const handleConnectAppleCalendar = async (username: string, password: string, serverUrl?: string) => {
-    try {
-      const success = await authenticateAppleCalendar(username, password, serverUrl);
-      if (success) {
-        setIsAppleCalendarConnected(true);
-        setAppleCalendarEmail(username);
-        setUseRealCalendar(true);
-        setShowAppleCalendarForm(false);
-      } else {
-        alert('Failed to connect to Apple Calendar. Please check your credentials.');
-      }
-    } catch (error) {
-      console.error('Error connecting to Apple Calendar:', error);
-      alert('Failed to connect to Apple Calendar. Please check your credentials and ensure you\'re using an app-specific password.');
+  // Sync Google Calendar events for the current event's date range
+  const handleSyncGoogleCalendar = async () => {
+    if (!googleAccessToken) {
+      alert('Please link your Google Calendar first.');
+      return;
     }
-  };
-
-  // Handle Apple Calendar disconnect
-  const handleDisconnectAppleCalendar = async () => {
-    try {
-      await disconnectAppleCalendar();
-      setIsAppleCalendarConnected(false);
-      setAppleCalendarEmail(null);
-      setUseRealCalendar(false);
-      setCalendarEvents([]);
-    } catch (error) {
-      console.error('Error disconnecting Apple Calendar:', error);
-    }
-  };
-
-  // Logic: Sync Calendar
-  const handleSyncCalendar = async () => {
     setIsSyncingCalendar(true);
     try {
-      // Use real calendar if connected, otherwise use demo data
-      const data = await fetchUserCalendar(useRealCalendar, !useRealCalendar);
-      
-      // Only add events that don't already exist (by time slot)
-      setCalendarEvents((prev: CalendarEvent[]) => {
-        const existingTimes = new Set(prev.map((e: CalendarEvent) => e.startTime));
-        const newEvents = data.filter((e: CalendarEvent) => !existingTimes.has(e.startTime));
-        return [...prev, ...newEvents];
-      });
+      const start = event?.dateRange?.startDate;
+      const end = event?.dateRange?.endDate;
+      const data = await fetchGoogleCalendarEvents(googleAccessToken, start, end);
+      setCalendarEvents(data);
     } catch (err) {
-      console.error("Failed to sync calendar", err);
-      alert("Failed to sync calendar. Please try again.");
+      console.error("Failed to sync Google Calendar:", err);
+      setIsGoogleCalendarLinked(false);
+      setGoogleAccessToken(null);
+      alert("Calendar sync failed. Your session may have expired — please re-link Google Calendar.");
     } finally {
       setIsSyncingCalendar(false);
     }
+  };
+
+  // Link Google Calendar (re-sign-in to get fresh token with calendar scope)
+  const handleLinkGoogleCalendar = async () => {
+    try {
+      const result = await signInWithGoogle();
+      if (result?.accessToken) {
+        setGoogleAccessToken(result.accessToken);
+        setIsGoogleCalendarLinked(true);
+        setIsSyncingCalendar(true);
+        try {
+          const start = event?.dateRange?.startDate;
+          const end = event?.dateRange?.endDate;
+          const data = await fetchGoogleCalendarEvents(result.accessToken, start, end);
+          setCalendarEvents(data);
+        } catch (err) {
+          console.error("Failed to fetch calendar after linking:", err);
+        } finally {
+          setIsSyncingCalendar(false);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to link Google Calendar:', error);
+      alert('Failed to link Google Calendar. Please try again.');
+    }
+  };
+
+  // Disconnect Google Calendar
+  const handleDisconnectGoogleCalendar = () => {
+    setGoogleAccessToken(null);
+    setIsGoogleCalendarLinked(false);
+    setCalendarEvents([]);
   };
 
   // Logic: Handle message sending and AI parsing
@@ -1203,7 +1175,7 @@ const App: React.FC = () => {
     
     // Conflict Prevention: If trying to mark as available, check calendar events first
     if (isAvailable) {
-      const conflict = calendarEvents.find((e: CalendarEvent) => e.startTime === time);
+      const conflict = calendarEvents.find((e: CalendarEvent) => e.date === date && e.startTime === time);
       if (conflict) {
         alert(`Conflict detected: "${conflict.title}". You cannot mark yourself as available during your existing calendar events.`);
         return;
@@ -1231,7 +1203,7 @@ const App: React.FC = () => {
     // Filter out conflicts for 'select' operations
     const validUpdates = updates.filter(update => {
       if (update.isAvailable) {
-        const conflict = calendarEvents.find((e: CalendarEvent) => e.startTime === update.time);
+        const conflict = calendarEvents.find((e: CalendarEvent) => e.date === update.date && e.startTime === update.time);
         return !conflict;
       }
       return true;
@@ -1911,29 +1883,25 @@ const App: React.FC = () => {
             >
               + Add Member
             </button>
-            <button
-              onClick={() => setShowCalendarForm(true)}
-              className="flex-1 bg-white border border-gray-200 px-4 py-2 rounded-xl text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
-            >
-              + Add Calendar Event
-            </button>
           </div>
         )}
 
-        {/* Calendar Events List */}
+        {/* Google Calendar Events */}
         {calendarEvents.length > 0 && (
           <div className="mb-4 bg-white rounded-xl border border-gray-100 p-3">
-            <h4 className="text-xs font-bold text-gray-500 uppercase mb-2">Your Calendar Events</h4>
+            <div className="flex items-center justify-between mb-2">
+              <h4 className="text-xs font-bold text-gray-500 uppercase">Google Calendar</h4>
+              <button
+                onClick={handleDisconnectGoogleCalendar}
+                className="text-[10px] text-rose-500 hover:text-rose-700 font-medium"
+              >
+                Disconnect
+              </button>
+            </div>
             <div className="space-y-1">
               {calendarEvents.map((calEvent: CalendarEvent) => (
-                <div key={calEvent.id} className="flex items-center justify-between text-xs p-2 bg-gray-50 rounded-lg">
-                  <span className="text-gray-700">{calEvent.title} - {calEvent.startTime}</span>
-                  <button
-                    onClick={() => handleRemoveCalendarEvent(calEvent.id)}
-                    className="text-rose-500 hover:text-rose-700"
-                  >
-                    ×
-                  </button>
+                <div key={calEvent.id} className="flex items-center text-xs p-2 bg-gray-50 rounded-lg">
+                  <span className="text-gray-700">{calEvent.title} — {calEvent.startTime}</span>
                 </div>
               ))}
             </div>
@@ -1971,12 +1939,11 @@ const App: React.FC = () => {
               lockedSlot={event.lockedSlot}
               calendarEvents={calendarEvents}
               isSyncing={isSyncingCalendar}
-              onSyncCalendar={handleSyncCalendar}
+              onSyncCalendar={handleSyncGoogleCalendar}
               onClearCalendar={() => setCalendarEvents([])}
-              isAppleCalendarConnected={isAppleCalendarConnected}
-              appleCalendarEmail={appleCalendarEmail}
-              onConnectAppleCalendar={() => setShowAppleCalendarForm(true)}
-              onDisconnectAppleCalendar={handleDisconnectAppleCalendar}
+              isGoogleCalendarLinked={isGoogleCalendarLinked}
+              onLinkGoogleCalendar={handleLinkGoogleCalendar}
+              onDisconnectGoogleCalendar={handleDisconnectGoogleCalendar}
               proposedTimeSlots={event.proposedTimeSlots}
               approvedTimeSlot={event.approvedTimeSlot}
               onAnalyze={handleAnalyzeAvailability}
@@ -2016,22 +1983,6 @@ const App: React.FC = () => {
         <MemberFormModal
           onClose={() => setShowMemberForm(false)}
           onSubmit={handleAddMember}
-        />
-      )}
-
-      {/* Calendar Event Form Modal */}
-      {showCalendarForm && (
-        <CalendarEventFormModal
-          onClose={() => setShowCalendarForm(false)}
-          onSubmit={handleAddCalendarEvent}
-        />
-      )}
-
-      {/* Apple Calendar Connection Form Modal */}
-      {showAppleCalendarForm && (
-        <AppleCalendarFormModal
-          onClose={() => setShowAppleCalendarForm(false)}
-          onSubmit={handleConnectAppleCalendar}
         />
       )}
 
@@ -2597,190 +2548,6 @@ const MemberManagerModal: React.FC<{
     </div>
   );
 };
-
-// Calendar Event Form Modal Component
-const CalendarEventFormModal: React.FC<{
-  onClose: () => void;
-  onSubmit: (data: { title: string; startTime: string; durationMinutes: number }) => void;
-}> = ({ onClose, onSubmit }) => {
-  const [title, setTitle] = useState('');
-  const [startTime, setStartTime] = useState('');
-  const [durationMinutes, setDurationMinutes] = useState(60);
-
-  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    if (!title.trim() || !startTime) return;
-    onSubmit({ title, startTime, durationMinutes });
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl p-6 max-w-md w-full">
-        <h3 className="font-bold text-gray-900 mb-4">Add Calendar Event</h3>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Event Title</label>
-            <input
-              type="text"
-              value={title}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTitle(e.target.value)}
-              placeholder="e.g., Dentist Appointment"
-              className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
-              required
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Start Time</label>
-            <select
-              value={startTime}
-              onChange={(e) => setStartTime(e.target.value)}
-              className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
-              required
-            >
-              <option value="">Select time</option>
-              {TIME_SLOTS.map(time => (
-                <option key={time} value={time}>{time}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Duration (minutes)</label>
-            <input
-              type="number"
-              value={durationMinutes}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDurationMinutes(parseInt(e.target.value) || 60)}
-              min={15}
-              step={15}
-              className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
-              required
-            />
-          </div>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex-1 px-4 py-2 border border-gray-200 rounded-xl text-gray-700 hover:bg-gray-50 transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-colors"
-            >
-              Add
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-};
-
-// Apple Calendar Connection Form Modal Component
-const AppleCalendarFormModal: React.FC<{
-  onClose: () => void;
-  onSubmit: (username: string, password: string, serverUrl?: string) => void;
-}> = ({ onClose, onSubmit }) => {
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [serverUrl, setServerUrl] = useState('');
-  const [useCustomServer, setUseCustomServer] = useState(false);
-
-  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    if (!username.trim() || !password.trim()) return;
-    const finalServerUrl = useCustomServer && serverUrl.trim() ? serverUrl.trim() : undefined;
-    onSubmit(username, password, finalServerUrl);
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl p-6 max-w-md w-full max-h-[90vh] overflow-y-auto">
-        <h3 className="font-bold text-gray-900 mb-2">Connect Apple Calendar</h3>
-        <p className="text-xs text-gray-500 mb-4">
-          Connect to your iCloud Calendar using your Apple ID and an app-specific password.
-        </p>
-        
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4">
-          <p className="text-xs text-blue-800 font-semibold mb-1">Setup Instructions:</p>
-          <ol className="text-xs text-blue-700 list-decimal list-inside space-y-1">
-            <li>Enable Two-Factor Authentication on your Apple ID</li>
-            <li>Go to appleid.apple.com → Security → App-Specific Passwords</li>
-            <li>Generate a password named "SyncUp Calendar"</li>
-            <li>Use your Apple ID email and the generated password below</li>
-          </ol>
-        </div>
-
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Apple ID Email</label>
-            <input
-              type="email"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              placeholder="your.email@icloud.com"
-              className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
-              required
-            />
-          </div>
-          
-          <div>
-            <label className="block text-xs font-bold text-gray-500 uppercase mb-1">App-Specific Password</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)}
-              placeholder="xxxx-xxxx-xxxx-xxxx"
-              className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
-              required
-            />
-            <p className="text-[10px] text-gray-400 mt-1">
-              Not your regular Apple ID password. Generate one at appleid.apple.com
-            </p>
-          </div>
-
-          <div>
-            <label className="flex items-center space-x-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={useCustomServer}
-                onChange={(e) => setUseCustomServer(e.target.checked)}
-                className="rounded"
-              />
-              <span className="text-xs font-bold text-gray-500 uppercase">Use Custom CalDAV Server</span>
-            </label>
-            {useCustomServer && (
-              <input
-                type="text"
-                value={serverUrl}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setServerUrl(e.target.value)}
-                placeholder="https://caldav.example.com"
-                className="w-full mt-2 px-4 py-2 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
-              />
-            )}
-          </div>
-
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex-1 px-4 py-2 border border-gray-200 rounded-xl text-gray-700 hover:bg-gray-50 transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-colors"
-            >
-              Connect
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-};
-
 
 // Friends Modal Component
 const FriendsModal: React.FC<{
